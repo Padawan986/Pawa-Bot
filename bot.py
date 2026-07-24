@@ -1,14 +1,15 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import yt_dlp
 import asyncio
-import sqlite3
+import json
+import os
 import random
 import requests
+import base64
 from PIL import Image, ImageFilter, ImageDraw, ImageOps
 import io
-import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from aiohttp import web
@@ -28,11 +29,53 @@ except Exception as e:
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# --- DATENBANK SETUP ---
-db = sqlite3.connect("mega_bot.db", check_same_thread=False)
-cursor = db.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER, guild_id INTEGER, balance INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 0, warns INTEGER DEFAULT 0, UNIQUE(user_id, guild_id))")
-db.commit()
+# ==========================================
+# --- JSON DATENBANK & GITHUB BACKUP ---
+# ==========================================
+DB_FILE = "db.json"
+
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_db():
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+data = load_db()
+
+def github_sync():
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPO") # Format: "Username/RepoName"
+    if not token or not repo:
+        return # Wenn keine Tokens gesetzt sind, überspringe das Backup
+    
+    try:
+        url = f"https://api.github.com/repos/{repo}/contents/{DB_FILE}"
+        headers = {"Authorization": f"token {token}"}
+        
+        # Finde den aktuellen SHA der Datei heraus (nötig für Update)
+        r = requests.get(url, headers=headers)
+        sha = r.json().get("sha") if r.status_code == 200 else None
+        
+        with open(DB_FILE, "rb") as f:
+            content = base64.b64encode(f.read()).decode("utf-8")
+            
+        payload = {
+            "message": "Auto-Sync Bot Database",
+            "content": content,
+            "sha": sha
+        }
+        requests.put(url, headers=headers, json=payload)
+        print("✅ Datenbank auf GitHub gesichert!")
+    except Exception as e:
+        print(f"GitHub Sync Fehler: {e}")
+
+@tasks.loop(minutes=5)
+async def backup_task():
+    github_sync()
 
 # --- MUSIK SETUP ---
 ytdl_format_options = {
@@ -60,7 +103,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, search, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
 
-        # --- SPOTIFY FIX ---
         if "open.spotify.com/track/" in search:
             try:
                 oembed_url = f"https://open.spotify.com/oembed?url={search}"
@@ -74,7 +116,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search, download=not stream))
         
-        # Wenn es eine Playlist ist
         if 'entries' in data:
             sources = []
             for entry in data['entries']:
@@ -83,7 +124,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     sources.append(cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=entry))
             return sources
         
-        # Einzelner Song
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
 
@@ -225,8 +265,9 @@ async def on_ready():
     except Exception as e:
         print(f'Fehler beim Syncen der Commands: {e}')
     bot.spam_cache = {}
-    # Starte Webserver für Render
     bot.loop.create_task(start_webserver())
+    if not backup_task.is_running():
+        backup_task.start() # Startet das automatische GitHub Backup
 
 @bot.event
 async def on_message(message):
@@ -248,28 +289,32 @@ async def on_message(message):
             await message.channel.send(f"{message.author.mention} wurde wegen Spam gemutet.", delete_after=5)
         except: pass
 
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, guild_id) VALUES (?, ?)", (message.author.id, message.guild.id))
-    xp_gain = random.randint(5, 15)
-    cursor.execute("UPDATE users SET xp = xp + ?, balance = balance + ? WHERE user_id = ? AND guild_id = ?", (xp_gain, 1, message.author.id, message.guild.id))
+    # --- LEVELING & ECONOMY (JSON) ---
+    guild_id = str(message.guild.id)
+    user_id = str(message.author.id)
     
-    cursor.execute("SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?", (message.author.id, message.guild.id))
-    data = cursor.fetchone()
-    if data:
-        current_xp, current_level = data[0], data[1]
-        xp_needed = current_level * 100
-        if current_xp >= xp_needed:
-            cursor.execute("UPDATE users SET level = level + 1, xp = xp - ? WHERE user_id = ? AND guild_id = ?", (xp_needed, message.author.id, message.guild.id))
-            await message.channel.send(f"🎉 {message.author.mention} ist Level {current_level + 1} aufgestiegen!")
-    db.commit()
+    if guild_id not in data: data[guild_id] = {}
+    if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
+    
+    user_data = data[guild_id][user_id]
+    user_data["xp"] += random.randint(5, 15)
+    user_data["balance"] += 1
+    
+    xp_needed = user_data["level"] * 100
+    if user_data["xp"] >= xp_needed:
+        user_data["level"] += 1
+        user_data["xp"] -= xp_needed
+        await message.channel.send(f"🎉 {message.author.mention} ist Level {user_data['level']} aufgestiegen!")
+    
+    save_db()
 
 # ==========================================
-# --- MODERATION (MIT DM & APPEAL) ---
+# --- MODERATION ---
 # ==========================================
 @bot.tree.command(name="ban", description="Bannt einen User")
 @app_commands.checks.has_permissions(ban_members=True)
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
-    
     embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gebannt!", color=discord.Color.red())
     embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "ban", reason or "Kein Grund", member.id)
@@ -278,7 +323,6 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
         dm_status = "User wurde benachrichtigt."
     except:
         dm_status = "User hat DMs deaktiviert."
-        
     await member.ban(reason=reason)
     await interaction.followup.send(f'✅ {member} gebannt. Grund: {reason}\n*{dm_status}*')
 
@@ -286,7 +330,6 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 @app_commands.checks.has_permissions(kick_members=True)
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
-    
     embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gekickt!", color=discord.Color.red())
     embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "kick", reason or "Kein Grund", member.id)
@@ -295,7 +338,6 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
         dm_status = "User wurde benachrichtigt."
     except:
         dm_status = "User hat DMs deaktiviert."
-        
     await member.kick(reason=reason)
     await interaction.followup.send(f'✅ {member} gekickt. Grund: {reason}\n*{dm_status}*')
 
@@ -303,7 +345,6 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
 @app_commands.checks.has_permissions(moderate_members=True)
 async def timeout(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = None):
     await interaction.response.defer()
-    
     embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} getimeoutet!", color=discord.Color.red())
     embed.add_field(name="Dauer", value=f"{minutes} Minuten", inline=False)
     embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
@@ -313,7 +354,6 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
         dm_status = "User wurde benachrichtigt."
     except:
         dm_status = "User hat DMs deaktiviert."
-        
     await member.timeout(timedelta(minutes=minutes), reason=reason)
     await interaction.followup.send(f'⏳ {member.mention} wurde für {minutes} Minuten getimeoutet.\n*{dm_status}*')
 
@@ -327,8 +367,13 @@ async def purge(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="warn", description="Verwarnt einen User")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
-    cursor.execute("UPDATE users SET warns = warns + 1 WHERE user_id = ? AND guild_id = ?", (member.id, interaction.guild.id))
-    db.commit()
+    guild_id = str(interaction.guild.id)
+    user_id = str(member.id)
+    if guild_id not in data: data[guild_id] = {}
+    if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
+    
+    data[guild_id][user_id]["warns"] += 1
+    save_db()
     try:
         await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
@@ -357,8 +402,6 @@ async def play(interaction: discord.Interaction, query: str):
 
     try:
         result = await YTDLSource.from_url(query, loop=bot.loop)
-        
-        # Wenn Playlist
         if isinstance(result, list):
             if not result:
                 return await interaction.followup.send("Konnte keine Songs finden.")
@@ -371,8 +414,6 @@ async def play(interaction: discord.Interaction, query: str):
             else:
                 interaction.guild.voice_client.play(first_song, after=lambda e: check_queue(interaction.guild.id, interaction.channel))
                 await interaction.followup.send(f'🎵 Spielt jetzt: **{first_song.title}**\n➕ {len(result)} weitere Songs zur Warteschlange hinzugefügt!')
-        
-        # Wenn einzelner Song
         else:
             if interaction.guild.voice_client.is_playing():
                 queues.setdefault(interaction.guild.id, []).append(result)
@@ -380,7 +421,6 @@ async def play(interaction: discord.Interaction, query: str):
             else:
                 interaction.guild.voice_client.play(result, after=lambda e: check_queue(interaction.guild.id, interaction.channel))
                 await interaction.followup.send(f'🎵 Spielt jetzt: **{result.title}**')
-                
     except Exception as e:
         await interaction.followup.send(f"Fehler beim Abspielen: {e}")
 
@@ -407,30 +447,39 @@ async def stop(interaction: discord.Interaction):
 @bot.tree.command(name="balance", description="Zeigt deinen Kontostand")
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
-    cursor.execute("SELECT balance FROM users WHERE user_id = ? AND guild_id = ?", (member.id, interaction.guild.id))
-    data = cursor.fetchone()
-    bal = data[0] if data else 0
-    await interaction.response.send_message(f'💰 {member.name} hat {bal} Coins.')
+    user_data = data.get(str(interaction.guild.id), {}).get(str(member.id), {"balance": 0})
+    await interaction.response.send_message(f'💰 {member.name} hat {user_data["balance"]} Coins.')
 
 @bot.tree.command(name="daily", description="Hole dir deine täglichen Coins")
 async def daily(interaction: discord.Interaction):
-    cursor.execute("UPDATE users SET balance = balance + 500 WHERE user_id = ? AND guild_id = ?", (interaction.user.id, interaction.guild.id))
-    db.commit()
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
+    if guild_id not in data: data[guild_id] = {}
+    if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
+    
+    data[guild_id][user_id]["balance"] += 500
+    save_db()
     await interaction.response.send_message('💰 Du hast deine 500 täglichen Coins abgeholt!')
 
 @bot.tree.command(name="gamble", description="Spiele um deine Coins")
 async def gamble(interaction: discord.Interaction, amount: int):
     if amount <= 0: return await interaction.response.send_message("Betrag muss > 0 sein.")
-    cursor.execute("SELECT balance FROM users WHERE user_id = ? AND guild_id = ?", (interaction.user.id, interaction.guild.id))
-    data = cursor.fetchone()
-    if not data or data[0] < amount: return await interaction.response.send_message("Du hast nicht genug Coins.")
+    
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
+    if guild_id not in data: data[guild_id] = {}
+    if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
+    
+    if data[guild_id][user_id]["balance"] < amount:
+        return await interaction.response.send_message("Du hast nicht genug Coins.")
+        
     if random.randint(1, 2) == 1:
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ? AND guild_id = ?", (amount, interaction.user.id, interaction.guild.id))
+        data[guild_id][user_id]["balance"] += amount
         await interaction.response.send_message(f'🎉 Du hast {amount*2} Coins gewonnen!')
     else:
-        cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ? AND guild_id = ?", (amount, interaction.user.id, interaction.guild.id))
+        data[guild_id][user_id]["balance"] -= amount
         await interaction.response.send_message('💀 Du hast alles verloren.')
-    db.commit()
+    save_db()
 
 # ==========================================
 # --- LEVELING & STATS ---
@@ -438,24 +487,24 @@ async def gamble(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="rank", description="Zeigt dein Level")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
-    cursor.execute("SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?", (member.id, interaction.guild.id))
-    data = cursor.fetchone()
-    if not data: return await interaction.response.send_message("Noch keine Daten.")
+    user_data = data.get(str(interaction.guild.id), {}).get(str(member.id), {"xp": 0, "level": 0})
+    
     embed = discord.Embed(title=f"Rang von {member.name}", color=discord.Color.gold())
-    embed.add_field(name="Level", value=data[1])
-    embed.add_field(name="XP", value=data[0])
+    embed.add_field(name="Level", value=user_data["level"])
+    embed.add_field(name="XP", value=user_data["xp"])
     embed.set_thumbnail(url=member.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="leaderboard", description="Top 5 Server Mitglieder")
 async def leaderboard(interaction: discord.Interaction):
-    cursor.execute("SELECT user_id, level, xp FROM users WHERE guild_id = ? ORDER BY level DESC, xp DESC LIMIT 5", (interaction.guild.id,))
-    rows = cursor.fetchall()
+    guild_data = data.get(str(interaction.guild.id), {})
+    sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("level", 0), reverse=True)[:5]
+    
     embed = discord.Embed(title="🏆 Leaderboard", color=discord.Color.gold())
-    for i, row in enumerate(rows, 1):
-        member = interaction.guild.get_member(row[0])
+    for i, (user_id, udata) in enumerate(sorted_users, 1):
+        member = interaction.guild.get_member(int(user_id))
         name = member.name if member else "Unbekannt"
-        embed.add_field(name=f"#{i} {name}", value=f"Level {row[1]} | {row[2]} XP", inline=False)
+        embed.add_field(name=f"#{i} {name}", value=f"Level {udata.get('level', 0)} | {udata.get('xp', 0)} XP", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
@@ -508,10 +557,12 @@ async def meme(interaction: discord.Interaction):
 async def hug(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f'🤗 {interaction.user.mention} umarmt {member.mention}!')
 
-@bot.tree.command(name="weather", description="Zeigt das Wetter")
+# --- WETTER AUF DEUTSCH UND IN CELSIUS ---
+@bot.tree.command(name="weather", description="Zeigt das Wetter in Celsius")
 async def weather(interaction: discord.Interaction, city: str):
     try:
-        r = requests.get(f"https://wttr.in/{city}?format=3")
+        # &m erzwingt das metrische System (Celsius), &lang=de erzwingt Deutsch
+        r = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t+%w&lang=de&m")
         await interaction.response.send_message(f'☁️ Wetter für {city}: {r.text}')
     except:
         await interaction.response.send_message("Wetterdaten konnten nicht abgerufen werden.")
@@ -563,7 +614,7 @@ async def ticket(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(manage_messages=True)
 async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     await interaction.response.defer()
-    embed = discord.Embed(title="🎉 GIVEAWAY 🎉 Reagiere mit 🎉 um beizutreten", description=f"Preis: **{prize}**\nEndet in {minutes} Minuten.", color=discord.Color.gold())
+    embed = discord.Embed(title="🎉 GIVEAWAY 🎉", description=f"Preis: **{prize}**\nEndet in {minutes} Minuten.", color=discord.Color.gold())
     await interaction.followup.send(embed=embed)
     msg = await interaction.original_response()
     await msg.add_reaction('🎉')
@@ -609,6 +660,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # --- BOT START ---
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    print("FEHLER: Token wurde nicht gefunden. Bitte stelle sicher, dass in deiner .env Datei 'TOKEN=DeinToken' steht ODER die Umgebungsvariable auf Render gesetzt ist.")
+    print("FEHLER: Token wurde nicht gefunden.")
 else:
     bot.run(TOKEN)
