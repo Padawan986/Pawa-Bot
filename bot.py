@@ -563,7 +563,7 @@ async def ticket(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(manage_messages=True)
 async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     await interaction.response.defer()
-    embed = discord.Embed(title="🎉 GIVEAWAY 🎉", description=f"Preis: **{prize}**\nEndet in {minutes} Minuten.", color=discord.Color.gold())
+    embed = discord.Embed(title="🎉 GIVEAWAY 🎉 Reagiere mit 🎉 um beizutreten", description=f"Preis: **{prize}**\nEndet in {minutes} Minuten.", color=discord.Color.gold())
     await interaction.followup.send(embed=embed)
     msg = await interaction.original_response()
     await msg.add_reaction('🎉')
