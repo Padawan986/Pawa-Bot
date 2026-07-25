@@ -8,7 +8,6 @@ import os
 import random
 import requests
 import base64
-import threading
 from PIL import Image, ImageFilter, ImageDraw, ImageOps
 import io
 from dotenv import load_dotenv
@@ -152,9 +151,13 @@ async def handle(request):
 app = web.Application()
 app.add_routes([web.get('/', handle)])
 
-def run_webserver():
+async def start_webserver():
     port = int(os.getenv("PORT", 8080))
-    web.run_app(app, host='0.0.0.0', port=port, print=None)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌐 Webserver für Keep-Alive auf Port {port} gestartet.")
 
 # ==========================================
 # --- APPEAL SYSTEM (EINSPRÜCHE) ---
@@ -270,6 +273,9 @@ async def on_ready():
     bot.spam_cache = {}
     if not backup_task.is_running():
         backup_task.start()
+    
+    # Startet den Webserver sicher im Haupt-Loop
+    bot.loop.create_task(start_webserver())
 
 @bot.event
 async def on_message(message):
@@ -378,7 +384,7 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     
     data[guild_id][user_id]["warns"] += 1
-    db_dirty = True # Merken, dass sich was geändert hat
+    db_dirty = True
     try:
         await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
@@ -665,10 +671,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 # --- BOT START ---
 # ==========================================
-# Starte den Webserver in einem separaten Thread, damit Render den Port sofort findet
-threading.Thread(target=run_webserver, daemon=True).start()
-print("🌐 Keep-Alive Webserver im Hintergrund gestartet.")
-
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     print("FEHLER: Token wurde nicht gefunden. Bitte stelle sicher, dass die Umgebungsvariable auf Render gesetzt ist.")
