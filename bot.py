@@ -34,6 +34,7 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 # --- JSON DATENBANK & GITHUB BACKUP ---
 # ==========================================
 DB_FILE = "db.json"
+db_dirty = False # Merkt sich, ob Daten geändert wurden
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -75,7 +76,13 @@ def github_sync():
 
 @tasks.loop(minutes=5)
 async def backup_task():
-    github_sync()
+    global db_dirty
+    # NUR speichern, wenn sich wirklich etwas geändert hat!
+    if db_dirty:
+        save_db()
+        github_sync()
+        db_dirty = False
+        print("✅ Änderungen erkannt und gespeichert!")
 
 # --- MUSIK SETUP ---
 ytdl_format_options = {
@@ -146,7 +153,6 @@ app = web.Application()
 app.add_routes([web.get('/', handle)])
 
 def run_webserver():
-    # Läuft in einem separaten Thread, damit Render den Port sofort findet
     port = int(os.getenv("PORT", 8080))
     web.run_app(app, host='0.0.0.0', port=port, print=None)
 
@@ -260,13 +266,14 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f'✅ {len(synced)} Slash Commands synchronisiert!')
     except Exception as e:
-        print(f'Fehler beim Syncen der Commands: {e}")
+        print(f"Fehler beim Syncen der Commands: {e}")
     bot.spam_cache = {}
     if not backup_task.is_running():
         backup_task.start()
 
 @bot.event
 async def on_message(message):
+    global db_dirty
     if message.author.bot or not message.guild: 
         return
 
@@ -302,7 +309,8 @@ async def on_message(message):
         user_data["xp"] -= xp_needed
         await message.channel.send(f"🎉 {message.author.mention} ist Level {user_data['level']} aufgestiegen!")
     
-    save_db()
+    # Setze das Dirty Flag, aber speichere NICHT sofort! (Spart CPU)
+    db_dirty = True
 
 # ==========================================
 # --- MODERATION ---
@@ -363,13 +371,14 @@ async def purge(interaction: discord.Interaction, amount: int):
 @bot.tree.command(name="warn", description="Verwarnt einen User")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+    global db_dirty
     guild_id = str(interaction.guild.id)
     user_id = str(member.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     
     data[guild_id][user_id]["warns"] += 1
-    save_db()
+    db_dirty = True # Merken, dass sich was geändert hat
     try:
         await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
@@ -448,17 +457,19 @@ async def balance(interaction: discord.Interaction, member: discord.Member = Non
 
 @bot.tree.command(name="daily", description="Hole dir deine täglichen Coins")
 async def daily(interaction: discord.Interaction):
+    global db_dirty
     guild_id = str(interaction.guild.id)
     user_id = str(interaction.user.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     
     data[guild_id][user_id]["balance"] += 500
-    save_db()
+    db_dirty = True
     await interaction.response.send_message('💰 Du hast deine 500 täglichen Coins abgeholt!')
 
 @bot.tree.command(name="gamble", description="Spiele um deine Coins")
 async def gamble(interaction: discord.Interaction, amount: int):
+    global db_dirty
     if amount <= 0: return await interaction.response.send_message("Betrag muss > 0 sein.")
     
     guild_id = str(interaction.guild.id)
@@ -475,7 +486,7 @@ async def gamble(interaction: discord.Interaction, amount: int):
     else:
         data[guild_id][user_id]["balance"] -= amount
         await interaction.response.send_message('💀 Du hast alles verloren.')
-    save_db()
+    db_dirty = True
 
 # ==========================================
 # --- LEVELING & STATS ---
@@ -654,7 +665,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 # --- BOT START ---
 # ==========================================
-# Starte den Webserver in einem separaten Thread, damit Render den Port sofort findet!
+# Starte den Webserver in einem separaten Thread, damit Render den Port sofort findet
 threading.Thread(target=run_webserver, daemon=True).start()
 print("🌐 Keep-Alive Webserver im Hintergrund gestartet.")
 
