@@ -8,6 +8,7 @@ import os
 import random
 import requests
 import base64
+import threading
 from PIL import Image, ImageFilter, ImageDraw, ImageOps
 import io
 from dotenv import load_dotenv
@@ -50,13 +51,12 @@ def github_sync():
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPO") # Format: "Username/RepoName"
     if not token or not repo:
-        return # Wenn keine Tokens gesetzt sind, überspringe das Backup
+        return
     
     try:
         url = f"https://api.github.com/repos/{repo}/contents/{DB_FILE}"
         headers = {"Authorization": f"token {token}"}
         
-        # Finde den aktuellen SHA der Datei heraus (nötig für Update)
         r = requests.get(url, headers=headers)
         sha = r.json().get("sha") if r.status_code == 200 else None
         
@@ -145,13 +145,10 @@ async def handle(request):
 app = web.Application()
 app.add_routes([web.get('/', handle)])
 
-async def start_webserver():
-    runner = web.AppRunner(app)
-    await runner.setup()
+def run_webserver():
+    # Läuft in einem separaten Thread, damit Render den Port sofort findet
     port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"🌐 Webserver für Keep-Alive auf Port {port} gestartet.")
+    web.run_app(app, host='0.0.0.0', port=port, print=None)
 
 # ==========================================
 # --- APPEAL SYSTEM (EINSPRÜCHE) ---
@@ -263,11 +260,10 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f'✅ {len(synced)} Slash Commands synchronisiert!')
     except Exception as e:
-        print(f'Fehler beim Syncen der Commands: {e}')
+        print(f'Fehler beim Syncen der Commands: {e}")
     bot.spam_cache = {}
-    bot.loop.create_task(start_webserver())
     if not backup_task.is_running():
-        backup_task.start() # Startet das automatische GitHub Backup
+        backup_task.start()
 
 @bot.event
 async def on_message(message):
@@ -557,11 +553,9 @@ async def meme(interaction: discord.Interaction):
 async def hug(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f'🤗 {interaction.user.mention} umarmt {member.mention}!')
 
-# --- WETTER AUF DEUTSCH UND IN CELSIUS ---
 @bot.tree.command(name="weather", description="Zeigt das Wetter in Celsius")
 async def weather(interaction: discord.Interaction, city: str):
     try:
-        # &m erzwingt das metrische System (Celsius), &lang=de erzwingt Deutsch
         r = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t+%w&lang=de&m")
         await interaction.response.send_message(f'☁️ Wetter für {city}: {r.text}')
     except:
@@ -657,9 +651,15 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         except:
             await interaction.followup.send('Ein Fehler ist aufgetreten.', ephemeral=True)
 
+# ==========================================
 # --- BOT START ---
+# ==========================================
+# Starte den Webserver in einem separaten Thread, damit Render den Port sofort findet!
+threading.Thread(target=run_webserver, daemon=True).start()
+print("🌐 Keep-Alive Webserver im Hintergrund gestartet.")
+
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    print("FEHLER: Token wurde nicht gefunden.")
+    print("FEHLER: Token wurde nicht gefunden. Bitte stelle sicher, dass die Umgebungsvariable auf Render gesetzt ist.")
 else:
     bot.run(TOKEN)
