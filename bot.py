@@ -30,58 +30,84 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # ==========================================
-# --- JSON DATENBANK & GITHUB BACKUP ---
+# --- MULTI-SERVER JSON DATENBANK & GITHUB ---
 # ==========================================
-DB_FILE = "db.json"
 db_dirty = False # Merkt sich, ob Daten geändert wurden
+data = {} # Speichert alle Server im Arbeitsspeicher
 
 def load_db():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_db():
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-data = load_db()
-
-def github_sync():
+    """Lädt beim Starten ALLE *-db.json Dateien aus der GitHub Repo herunter"""
     token = os.getenv("GITHUB_TOKEN")
-    repo = os.getenv("GITHUB_REPO") # Format: "Username/RepoName"
+    repo = os.getenv("GITHUB_REPO")
     if not token or not repo:
+        print("⚠️ Keine GitHub Tokens gefunden. Starte mit leerer Datenbank.")
         return
+
+    try:
+        url = f"https://api.github.com/repos/{repo}/contents/"
+        headers = {"Authorization": f"token {token}"}
+        r = requests.get(url, headers=headers)
+        
+        if r.status_code == 200:
+            for file in r.json():
+                if file["name"].endswith("-db.json"):
+                    print(f"📥 Lade {file['name']} von GitHub...")
+                    file_content = requests.get(file["download_url"]).json()
+                    # Füge die Daten dieses Servers zum globalen 'data' dict hinzu
+                    data.update(file_content)
+            print(f"✅ {len(data)} Server-Datenbanken von GitHub geladen!")
+        else:
+            print("Keine bestehenden Datenbanken auf GitHub gefunden.")
+    except Exception as e:
+        print(f"Fehler beim Laden von GitHub: {e}")
+
+def save_and_sync():
+    """Speichert JEDEN Server in eine eigene (Servername)-db.json und lädt sie zu GitHub hoch"""
+    global db_dirty
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPO")
+    if not token or not repo: return
     
     try:
-        url = f"https://api.github.com/repos/{repo}/contents/{DB_FILE}"
-        headers = {"Authorization": f"token {token}"}
-        
-        r = requests.get(url, headers=headers)
-        sha = r.json().get("sha") if r.status_code == 200 else None
-        
-        with open(DB_FILE, "rb") as f:
-            content = base64.b64encode(f.read()).decode("utf-8")
+        for guild_id, guild_data in data.items():
+            guild = bot.get_guild(int(guild_id))
+            if guild:
+                # Servername bereinigen (Sonderzeichen entfernen, Leerzeichen durch _ ersetzen)
+                safe_name = "".join(c for c in guild.name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(" ", "_")
+                filename = f"{safe_name}-db.json"
+            else:
+                filename = f"{guild_id}-db.json"
             
-        payload = {
-            "message": "Auto-Sync Bot Database",
-            "content": content,
-            "sha": sha
-        }
-        requests.put(url, headers=headers, json=payload)
-        print("✅ Datenbank auf GitHub gesichert!")
+            content = json.dumps({guild_id: guild_data}, indent=4)
+            
+            # Lokal speichern (nur für Notfälle)
+            with open(filename, "w") as f:
+                f.write(content)
+                
+            # Zu GitHub pushen
+            api_url = f"https://api.github.com/repos/{repo}/contents/{filename}"
+            headers = {"Authorization": f"token {token}"}
+            
+            r_get = requests.get(api_url, headers=headers)
+            sha = r_get.json().get("sha") if r_get.status_code == 200 else None
+            
+            payload = {
+                "message": f"Auto-Sync {filename}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("utf-8"),
+                "sha": sha
+            }
+            requests.put(api_url, headers=headers, json=payload)
+        
+        db_dirty = False
+        print("✅ Alle Server-Datenbanken auf GitHub gesichert!")
     except Exception as e:
         print(f"GitHub Sync Fehler: {e}")
 
 @tasks.loop(minutes=5)
 async def backup_task():
-    global db_dirty
     # NUR speichern, wenn sich wirklich etwas geändert hat!
     if db_dirty:
-        save_db()
-        github_sync()
-        db_dirty = False
-        print("✅ Änderungen erkannt und gespeichert!")
+        save_and_sync()
 
 # --- MUSIK SETUP ---
 ytdl_format_options = {
@@ -265,6 +291,7 @@ class AppealDecisionView(discord.ui.View):
 @bot.event
 async def on_ready():
     print(f'🟢 MEGA BOT ONLINE: {bot.user.name}')
+    load_db() # Lädt alle Server-Datenbanken von GitHub herunter!
     try:
         synced = await bot.tree.sync()
         print(f'✅ {len(synced)} Slash Commands synchronisiert!')
@@ -274,7 +301,6 @@ async def on_ready():
     if not backup_task.is_running():
         backup_task.start()
     
-    # Startet den Webserver sicher im Haupt-Loop
     bot.loop.create_task(start_webserver())
 
 @bot.event
@@ -315,7 +341,6 @@ async def on_message(message):
         user_data["xp"] -= xp_needed
         await message.channel.send(f"🎉 {message.author.mention} ist Level {user_data['level']} aufgestiegen!")
     
-    # Setze das Dirty Flag, aber speichere NICHT sofort! (Spart CPU)
     db_dirty = True
 
 # ==========================================
