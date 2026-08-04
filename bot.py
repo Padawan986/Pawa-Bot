@@ -384,7 +384,6 @@ role_group = app_commands.Group(name="role", description="Verwaltet Rollen")
 @role_group.command(name="add", description="Gibt einem User eine Rolle")
 @owner_only()
 async def role_add(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
-    # SOFORT antworten, damit Discord nicht abbricht
     await interaction.response.defer(ephemeral=True)
     try:
         await member.add_roles(role)
@@ -401,6 +400,85 @@ async def role_remove(interaction: discord.Interaction, member: discord.Member, 
         await interaction.followup.send("✅", ephemeral=True)
     except:
         await interaction.followup.send("❌ Fehler", ephemeral=True)
+
+@bot.tree.command(name="create-role", description="Erstellt eine Rolle mit Presets und Hierarchie")
+@owner_only()
+@app_commands.choices(preset=[
+    app_commands.Choice(name="Admin (Alle Rechte)", value="admin"),
+    app_commands.Choice(name="Moderator (Kick, Mute, Manage)", value="moderator"),
+    app_commands.Choice(name="Mitglied (Standard)", value="member"),
+    app_commands.Choice(name="Muted (Stummgeschaltet)", value="muted")
+])
+@app_commands.choices(position=[
+    app_commands.Choice(name="Ganz unten", value="bottom"),
+    app_commands.Choice(name="Mitte", value="middle"),
+    app_commands.Choice(name="Ganz oben (unter Bot)", value="top")
+])
+async def create_role(interaction: discord.Interaction, name: str, preset: app_commands.Choice[str] = None, position: app_commands.Choice[str] = None, color: str = None):
+    await interaction.response.defer(ephemeral=True)
+    
+    # 1. Farbe parsen
+    role_color = discord.Color.default()
+    if color:
+        try:
+            role_color = discord.Color(int(color.replace("#", ""), 16))
+        except:
+            return await interaction.followup.send("❌ Ungültige Farbe! Bitte als Hex-Code (z.B. `FF0000` für Rot).", ephemeral=True)
+    
+    # 2. Rolle erstellen (ganz unten standardmäßig)
+    try:
+        new_role = await interaction.guild.create_role(name=name, color=role_color, reason=f"Erstellt von {interaction.user}")
+    except Exception as e:
+        return await interaction.followup.send(f"❌ Fehler beim Erstellen: {e}", ephemeral=True)
+        
+    # 3. Preset anwenden
+    permissions = discord.Permissions.none()
+    preset_val = preset.value if preset else "member"
+    
+    if preset_val == "admin":
+        permissions.administrator = True
+    elif preset_val == "moderator":
+        permissions.view_channel = True
+        permissions.send_messages = True
+        permissions.read_message_history = True
+        permissions.manage_messages = True
+        permissions.kick_members = True
+        permissions.moderate_members = True
+        permissions.manage_channels = True
+        permissions.view_audit_log = True
+    elif preset_val == "member":
+        permissions.view_channel = True
+        permissions.send_messages = True
+        permissions.read_message_history = True
+        permissions.connect = True
+        permissions.speak = True
+    elif preset_val == "muted":
+        permissions.view_channel = True
+        permissions.read_message_history = True
+        permissions.send_messages = False
+        permissions.add_reactions = False
+        permissions.connect = False
+        permissions.speak = False
+            
+    try:
+        await new_role.edit(permissions=permissions)
+    except Exception:
+        pass
+            
+    # 4. Hierarchie anpassen
+    pos_val = position.value if position else "bottom"
+    try:
+        bot_member = interaction.guild.me
+        bot_highest_pos = bot_member.top_role.position
+        
+        if pos_val == "top":
+            await new_role.edit(position=bot_highest_pos - 1)
+        elif pos_val == "middle":
+            await new_role.edit(position=max(1, bot_highest_pos // 2))
+    except Exception:
+        pass
+            
+    await interaction.followup.send(f"✅ Rolle `{name}` wurde erstellt.\n**Preset:** {preset_val}\n**Position:** {pos_val}", ephemeral=True)
 
 # ==========================================
 # --- MUSIC (FÜR ALLE) ---
@@ -630,7 +708,7 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
 async def dashboard(interaction: discord.Interaction):
     embed = discord.Embed(title="🛠️ Server Dashboard", description="Übersicht aller Slash-Features", color=discord.Color.blue())
     embed.add_field(name="Moderation (Nur Admins)", value="/ban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
-    embed.add_field(name="Rollen (Nur Admins)", value="/role add, /role remove", inline=False)
+    embed.add_field(name="Rollen (Nur Admins)", value="/role add, /role remove, /create-role", inline=False)
     embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Automatisch aktiv)", inline=False)
     embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
@@ -645,7 +723,6 @@ async def dashboard(interaction: discord.Interaction):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        # Wenn jemand nicht berechtigt ist, zeige eine unsichtbare Ladeanimation, die sofort verschwindet
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
         return
