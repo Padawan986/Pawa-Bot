@@ -30,30 +30,38 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # ==========================================
+# --- WHITELIST (NUR EUR BEIDE ACCOUNTS) ---
+# ==========================================
+WHITELIST = [1216316535006691348, 1304449108177588286]
+
+@bot.tree.check
+async def global_whitelist_check(interaction: discord.Interaction) -> bool:
+    # Wenn die User-ID nicht in der Whitelist ist, passiert gar nichts (still)
+    if interaction.user.id not in WHITELIST:
+        raise app_commands.CheckFailure()
+    return True
+
+# ==========================================
 # --- MULTI-SERVER JSON DATENBANK & GITHUB ---
 # ==========================================
-db_dirty = False # Merkt sich, ob Daten geändert wurden
-data = {} # Speichert alle Server im Arbeitsspeicher
+db_dirty = False
+data = {}
 
 def load_db():
-    """Lädt beim Starten ALLE *-db.json Dateien aus der GitHub Repo herunter"""
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPO")
     if not token or not repo:
         print("⚠️ Keine GitHub Tokens gefunden. Starte mit leerer Datenbank.")
         return
-
     try:
         url = f"https://api.github.com/repos/{repo}/contents/"
         headers = {"Authorization": f"token {token}"}
         r = requests.get(url, headers=headers)
-        
         if r.status_code == 200:
             for file in r.json():
                 if file["name"].endswith("-db.json"):
                     print(f"📥 Lade {file['name']} von GitHub...")
                     file_content = requests.get(file["download_url"]).json()
-                    # Füge die Daten dieses Servers zum globalen 'data' dict hinzu
                     data.update(file_content)
             print(f"✅ {len(data)} Server-Datenbanken von GitHub geladen!")
         else:
@@ -62,32 +70,25 @@ def load_db():
         print(f"Fehler beim Laden von GitHub: {e}")
 
 def save_and_sync():
-    """Speichert JEDEN Server in eine eigene (Servername)-db.json und lädt sie zu GitHub hoch"""
     global db_dirty
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPO")
     if not token or not repo: return
-    
     try:
         for guild_id, guild_data in data.items():
             guild = bot.get_guild(int(guild_id))
             if guild:
-                # Servername bereinigen (Sonderzeichen entfernen, Leerzeichen durch _ ersetzen)
                 safe_name = "".join(c for c in guild.name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(" ", "_")
                 filename = f"{safe_name}-db.json"
             else:
                 filename = f"{guild_id}-db.json"
             
             content = json.dumps({guild_id: guild_data}, indent=4)
-            
-            # Lokal speichern (nur für Notfälle)
             with open(filename, "w") as f:
                 f.write(content)
                 
-            # Zu GitHub pushen
             api_url = f"https://api.github.com/repos/{repo}/contents/{filename}"
             headers = {"Authorization": f"token {token}"}
-            
             r_get = requests.get(api_url, headers=headers)
             sha = r_get.json().get("sha") if r_get.status_code == 200 else None
             
@@ -105,20 +106,14 @@ def save_and_sync():
 
 @tasks.loop(minutes=5)
 async def backup_task():
-    # NUR speichern, wenn sich wirklich etwas geändert hat!
     if db_dirty:
         save_and_sync()
 
 # --- MUSIK SETUP ---
 ytdl_format_options = {
-    'format': 'bestaudio/best',
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',
-    'noplaylist': False
+    'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True,
+    'default_search': 'auto', 'source_address': '0.0.0.0', 'noplaylist': False
 }
-
 ffmpeg_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn'
@@ -134,7 +129,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, search, *, loop=None, stream=True):
         loop = loop or asyncio.get_event_loop()
-
         if "open.spotify.com/track/" in search:
             try:
                 oembed_url = f"https://open.spotify.com/oembed?url={search}"
@@ -143,11 +137,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     track_title = r.json().get("title")
                     artist = r.json().get("artist_name") or r.json().get("provider_name")
                     search = f"ytsearch:{track_title} {artist}"
-            except Exception:
-                pass
+            except Exception: pass
 
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search, download=not stream))
-        
         if 'entries' in data:
             sources = []
             for entry in data['entries']:
@@ -155,7 +147,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     filename = entry['url'] if stream else ytdl.prepare_filename(entry)
                     sources.append(cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=entry))
             return sources
-        
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
 
@@ -173,7 +164,6 @@ def check_queue(guild_id, channel):
 # ==========================================
 async def handle(request):
     return web.Response(text="Bot ist online!")
-
 app = web.Application()
 app.add_routes([web.get('/', handle)])
 
@@ -201,7 +191,6 @@ class AppealModal(discord.ui.Modal, title='Einspruch einlegen'):
     async def on_submit(self, interaction: discord.Interaction):
         guild = bot.get_guild(self.guild_id)
         if not guild: return
-        
         appeals_channel = discord.utils.get(guild.text_channels, name="appeals")
         if not appeals_channel:
             overwrites = {
@@ -250,24 +239,17 @@ class AppealDecisionView(discord.ui.View):
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.manage_messages:
             return await interaction.response.send_message("Du hast keine Rechte dafür!", ephemeral=True)
-        
         guild = interaction.guild
         user = await bot.fetch_user(self.user_id)
-        
         try:
-            if self.action_type == "ban":
-                await guild.unban(user)
+            if self.action_type == "ban": await guild.unban(user)
             elif self.action_type == "timeout":
                 member = guild.get_member(self.user_id)
                 if member: await member.timeout(None)
-            
             channel = guild.system_channel or guild.text_channels[0]
             invite = await channel.create_invite(max_uses=1, unique=True)
-            try:
-                await user.send(f"✅ Dein Einspruch wurde angenommen! Du kannst hier wieder joinen: {invite.url}")
-            except:
-                pass
-            
+            try: await user.send(f"✅ Dein Einspruch wurde angenommen! Du kannst hier wieder joinen: {invite.url}")
+            except: pass
             await interaction.response.edit_message(content=f"✅ Angenommen von {interaction.user.mention}. User wurde benachrichtigt.", view=None)
         except Exception as e:
             await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
@@ -276,13 +258,9 @@ class AppealDecisionView(discord.ui.View):
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.manage_messages:
             return await interaction.response.send_message("Du hast keine Rechte dafür!", ephemeral=True)
-        
         user = await bot.fetch_user(self.user_id)
-        try:
-            await user.send("❌ Dein Einspruch wurde abgelehnt. Die Strafe bleibt bestehen.")
-        except:
-            pass
-        
+        try: await user.send("❌ Dein Einspruch wurde abgelehnt. Die Strafe bleibt bestehen.")
+        except: pass
         await interaction.response.edit_message(content=f"❌ Abgelehnt von {interaction.user.mention}. User wurde benachrichtigt.", view=None)
 
 # ==========================================
@@ -291,23 +269,23 @@ class AppealDecisionView(discord.ui.View):
 @bot.event
 async def on_ready():
     print(f'🟢 MEGA BOT ONLINE: {bot.user.name}')
-    load_db() # Lädt alle Server-Datenbanken von GitHub herunter!
+    load_db()
     try:
         synced = await bot.tree.sync()
         print(f'✅ {len(synced)} Slash Commands synchronisiert!')
     except Exception as e:
         print(f"Fehler beim Syncen der Commands: {e}")
     bot.spam_cache = {}
-    if not backup_task.is_running():
-        backup_task.start()
-    
+    if not backup_task.is_running(): backup_task.start()
     bot.loop.create_task(start_webserver())
 
 @bot.event
 async def on_message(message):
     global db_dirty
-    if message.author.bot or not message.guild: 
-        return
+    if message.author.bot or not message.guild: return
+
+    # Whitelist gilt auch für das Levelsystem (nur whitelisted User bekommen XP/Coins)
+    if message.author.id not in WHITELIST: return
 
     if "discord.gg" in message.content or "http://" in message.content:
         if not message.author.guild_permissions.manage_messages:
@@ -324,10 +302,8 @@ async def on_message(message):
             await message.channel.send(f"{message.author.mention} wurde wegen Spam gemutet.", delete_after=5)
         except: pass
 
-    # --- LEVELING & ECONOMY (JSON) ---
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
-    
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     
@@ -340,7 +316,6 @@ async def on_message(message):
         user_data["level"] += 1
         user_data["xp"] -= xp_needed
         await message.channel.send(f"🎉 {message.author.mention} ist Level {user_data['level']} aufgestiegen!")
-    
     db_dirty = True
 
 # ==========================================
@@ -356,8 +331,7 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     try:
         await member.send(embed=embed, view=view)
         dm_status = "User wurde benachrichtigt."
-    except:
-        dm_status = "User hat DMs deaktiviert."
+    except: dm_status = "User hat DMs deaktiviert."
     await member.ban(reason=reason)
     await interaction.followup.send(f'✅ {member} gebannt. Grund: {reason}\n*{dm_status}*')
 
@@ -371,8 +345,7 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     try:
         await member.send(embed=embed, view=view)
         dm_status = "User wurde benachrichtigt."
-    except:
-        dm_status = "User hat DMs deaktiviert."
+    except: dm_status = "User hat DMs deaktiviert."
     await member.kick(reason=reason)
     await interaction.followup.send(f'✅ {member} gekickt. Grund: {reason}\n*{dm_status}*')
 
@@ -387,8 +360,7 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     try:
         await member.send(embed=embed, view=view)
         dm_status = "User wurde benachrichtigt."
-    except:
-        dm_status = "User hat DMs deaktiviert."
+    except: dm_status = "User hat DMs deaktiviert."
     await member.timeout(timedelta(minutes=minutes), reason=reason)
     await interaction.followup.send(f'⏳ {member.mention} wurde für {minutes} Minuten getimeoutet.\n*{dm_status}*')
 
@@ -407,11 +379,9 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     user_id = str(member.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
-    
     data[guild_id][user_id]["warns"] += 1
     db_dirty = True
-    try:
-        await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
+    try: await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
     await interaction.response.send_message(f'⚠️ {member.mention} gewarnt. Grund: {reason}')
 
@@ -422,15 +392,34 @@ async def setnick(interaction: discord.Interaction, member: discord.Member, nick
     await interaction.response.send_message(f'✅ Nickname von {member} zu {nick} geändert.')
 
 # ==========================================
+# --- ROLLEN VERWALTUNG (NO VERBOSE) ---
+# ==========================================
+role_group = app_commands.Group(name="role", description="Verwaltet Rollen (Still)")
+
+@role_group.command(name="add", description="Gibt einem User eine Rolle")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def role_add(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    try:
+        await member.add_roles(role)
+        await interaction.response.send_message("✅", ephemeral=True)
+    except: pass # Komplett still bei Fehler
+
+@role_group.command(name="remove", description="Entfernt eine Rolle von einem User")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def role_remove(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    try:
+        await member.remove_roles(role)
+        await interaction.response.send_message("✅", ephemeral=True)
+    except: pass
+
+# ==========================================
 # --- MUSIC ---
 # ==========================================
 @bot.tree.command(name="play", description="Spielt Musik ab (YouTube, Spotify, SoundCloud)")
 async def play(interaction: discord.Interaction, query: str):
     if not interaction.user.voice:
         return await interaction.response.send_message('Du musst in einem Voice Channel sein!', ephemeral=True)
-    
     await interaction.response.defer()
-    
     if interaction.guild.voice_client is None:
         await interaction.user.voice.channel.connect()
     elif interaction.guild.voice_client.channel != interaction.user.voice.channel:
@@ -439,12 +428,9 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         result = await YTDLSource.from_url(query, loop=bot.loop)
         if isinstance(result, list):
-            if not result:
-                return await interaction.followup.send("Konnte keine Songs finden.")
-            
+            if not result: return await interaction.followup.send("Konnte keine Songs finden.")
             first_song = result.pop(0)
             queues.setdefault(interaction.guild.id, []).extend(result)
-            
             if interaction.guild.voice_client.is_playing():
                 await interaction.followup.send(f'➕ Playlist hinzugefügt: **{len(result)+1} Songs** in der Warteschlange!')
             else:
@@ -465,8 +451,7 @@ async def skip(interaction: discord.Interaction):
     if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
         interaction.guild.voice_client.stop()
         await interaction.response.send_message('⏭️ Song übersprungen!')
-    else:
-        await interaction.response.send_message('Es läuft keine Musik!')
+    else: await interaction.response.send_message('Es läuft keine Musik!')
 
 @bot.tree.command(name="stop", description="Stoppt die Musik")
 async def stop(interaction: discord.Interaction):
@@ -474,8 +459,7 @@ async def stop(interaction: discord.Interaction):
         queues[interaction.guild.id] = []
         await interaction.guild.voice_client.disconnect()
         await interaction.response.send_message('⏹️ Musik gestoppt. Tschüss!')
-    else:
-        await interaction.response.send_message('Ich bin in keinem Voice Channel.')
+    else: await interaction.response.send_message('Ich bin in keinem Voice Channel.')
 
 # ==========================================
 # --- ECONOMY ---
@@ -493,7 +477,6 @@ async def daily(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
-    
     data[guild_id][user_id]["balance"] += 500
     db_dirty = True
     await interaction.response.send_message('💰 Du hast deine 500 täglichen Coins abgeholt!')
@@ -502,15 +485,11 @@ async def daily(interaction: discord.Interaction):
 async def gamble(interaction: discord.Interaction, amount: int):
     global db_dirty
     if amount <= 0: return await interaction.response.send_message("Betrag muss > 0 sein.")
-    
     guild_id = str(interaction.guild.id)
     user_id = str(interaction.user.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
-    
-    if data[guild_id][user_id]["balance"] < amount:
-        return await interaction.response.send_message("Du hast nicht genug Coins.")
-        
+    if data[guild_id][user_id]["balance"] < amount: return await interaction.response.send_message("Du hast nicht genug Coins.")
     if random.randint(1, 2) == 1:
         data[guild_id][user_id]["balance"] += amount
         await interaction.response.send_message(f'🎉 Du hast {amount*2} Coins gewonnen!')
@@ -526,7 +505,6 @@ async def gamble(interaction: discord.Interaction, amount: int):
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
     user_data = data.get(str(interaction.guild.id), {}).get(str(member.id), {"xp": 0, "level": 0})
-    
     embed = discord.Embed(title=f"Rang von {member.name}", color=discord.Color.gold())
     embed.add_field(name="Level", value=user_data["level"])
     embed.add_field(name="XP", value=user_data["xp"])
@@ -537,7 +515,6 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
 async def leaderboard(interaction: discord.Interaction):
     guild_data = data.get(str(interaction.guild.id), {})
     sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("level", 0), reverse=True)[:5]
-    
     embed = discord.Embed(title="🏆 Leaderboard", color=discord.Color.gold())
     for i, (user_id, udata) in enumerate(sorted_users, 1):
         member = interaction.guild.get_member(int(user_id))
@@ -558,10 +535,8 @@ async def image(interaction: discord.Interaction, member: discord.Member = None,
     member = member or interaction.user
     effect_val = effect.value if effect else "blur"
     await interaction.response.defer()
-    
     response = requests.get(member.display_avatar.url)
     img = Image.open(io.BytesIO(response.content))
-    
     if effect_val == "blur": img = img.filter(ImageFilter.BLUR)
     elif effect_val == "invert":
         if img.mode == 'RGBA':
@@ -570,7 +545,6 @@ async def image(interaction: discord.Interaction, member: discord.Member = None,
             img = Image.merge('RGBA', inverted.split()+(a,))
         else: img = ImageOps.invert(img)
     elif effect_val == "greyscale": img = img.convert('L')
-    
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
@@ -588,8 +562,7 @@ async def meme(interaction: discord.Interaction):
             embed = discord.Embed(title=r.json()['title'], color=discord.Color.random())
             embed.set_image(url=r.json()['url'])
             await interaction.followup.send(embed=embed)
-    except:
-        await interaction.followup.send("Konnte gerade kein Meme laden.")
+    except: await interaction.followup.send("Konnte gerade kein Meme laden.")
 
 @bot.tree.command(name="hug", description="Umarme jemanden")
 async def hug(interaction: discord.Interaction, member: discord.Member):
@@ -600,8 +573,7 @@ async def weather(interaction: discord.Interaction, city: str):
     try:
         r = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t+%w&lang=de&m")
         await interaction.response.send_message(f'☁️ Wetter für {city}: {r.text}')
-    except:
-        await interaction.response.send_message("Wetterdaten konnten nicht abgerufen werden.")
+    except: await interaction.response.send_message("Wetterdaten konnten nicht abgerufen werden.")
 
 @bot.tree.command(name="avatar", description="Zeigt das Avatar eines Users")
 async def avatar(interaction: discord.Interaction, member: discord.Member = None):
@@ -623,8 +595,7 @@ async def suggest(interaction: discord.Interaction, suggestion: str):
     await msg.add_reaction('❌')
 
 class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="Ticket erstellen", style=discord.ButtonStyle.green, custom_id="create_ticket")
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
@@ -654,15 +625,13 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     await interaction.followup.send(embed=embed)
     msg = await interaction.original_response()
     await msg.add_reaction('🎉')
-    
     await asyncio.sleep(minutes * 60)
     msg = await interaction.channel.fetch_message(msg.id)
     users = [u async for u in msg.reactions[0].users() if not u.bot]
     if users:
         winner = random.choice(users)
         await interaction.channel.send(f'🎉 Glückwunsch {winner.mention}! Du hast **{prize}** gewonnen!')
-    else:
-        await interaction.channel.send('Niemand hat am Gewinnspiel teilgenommen.')
+    else: await interaction.channel.send('Niemand hat am Gewinnspiel teilgenommen.')
 
 # ==========================================
 # --- DASHBOARD & HELP ---
@@ -671,8 +640,9 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
 async def dashboard(interaction: discord.Interaction):
     embed = discord.Embed(title="🛠️ Server Dashboard", description="Übersicht aller Slash-Features", color=discord.Color.blue())
     embed.add_field(name="Moderation", value="/ban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
+    embed.add_field(name="Rollen", value="/role add, /role remove", inline=False)
     embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Automatisch aktiv)", inline=False)
-    embed.add_field(name="Music", value="/play, /skip, /stop (YouTube, Spotify, SoundCloud)", inline=False)
+    embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
     embed.add_field(name="Fun & Utility", value="/image, /meme, /hug, /weather, /avatar", inline=False)
@@ -680,22 +650,28 @@ async def dashboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- ERROR HANDLER ---
+# --- ERROR HANDLER (STILL FÜR WHITELIST) ---
 # ==========================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message('❌ Du hast keine Rechte dafür!', ephemeral=True)
+    # Wenn jemand nicht auf der Whitelist steht, einfach komplett ignorieren (kein Feedback)
+    if isinstance(error, app_commands.CheckFailure):
+        return
     else:
         print(f"Slash Command Error: {error}")
         try:
-            await interaction.response.send_message('Ein Fehler ist aufgetreten.', ephemeral=True)
-        except:
-            await interaction.followup.send('Ein Fehler ist aufgetreten.', ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send('Ein Fehler ist aufgetreten.', ephemeral=True)
+            else:
+                await interaction.response.send_message('Ein Fehler ist aufgetreten.', ephemeral=True)
+        except: pass
 
 # ==========================================
 # --- BOT START ---
 # ==========================================
+# Füge die Rollen-Gruppe zum Bot hinzu
+bot.tree.add_command(role_group)
+
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     print("FEHLER: Token wurde nicht gefunden. Bitte stelle sicher, dass die Umgebungsvariable auf Render gesetzt ist.")
