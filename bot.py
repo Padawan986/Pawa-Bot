@@ -35,10 +35,9 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 OWNER_IDS = [1216316535006691348, 1304449108177588286]
 
 def owner_only():
-    """Custom Check: Lässt den Befehl komplett stillschweigend scheitern, wenn der User nicht in der Owner-Liste steht."""
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.user.id not in OWNER_IDS:
-            raise app_commands.CheckFailure() # Bricht still ab
+            raise app_commands.CheckFailure()
         return True
     return app_commands.check(predicate)
 
@@ -232,8 +231,7 @@ class AppealDecisionView(discord.ui.View):
 
     @discord.ui.button(label="Annehmen", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in OWNER_IDS:
-            return # Nur Owner dürfen annehmen
+        if interaction.user.id not in OWNER_IDS: return
         guild = interaction.guild
         user = await bot.fetch_user(self.user_id)
         try:
@@ -251,8 +249,7 @@ class AppealDecisionView(discord.ui.View):
 
     @discord.ui.button(label="Ablehnen", style=discord.ButtonStyle.red)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in OWNER_IDS:
-            return # Nur Owner dürfen ablehnen
+        if interaction.user.id not in OWNER_IDS: return
         user = await bot.fetch_user(self.user_id)
         try: await user.send("❌ Dein Einspruch wurde abgelehnt. Die Strafe bleibt bestehen.")
         except: pass
@@ -280,7 +277,7 @@ async def on_message(message):
     if message.author.bot or not message.guild: return
 
     if "discord.gg" in message.content or "http://" in message.content:
-        if message.author.id not in OWNER_IDS: # Normale User dürfen keine Links
+        if message.author.id not in OWNER_IDS:
             try:
                 await message.delete()
                 await message.channel.send(f"{message.author.mention} Keine Links erlaubt!", delete_after=3)
@@ -294,7 +291,6 @@ async def on_message(message):
             await message.channel.send(f"{message.author.mention} wurde wegen Spam gemutet.", delete_after=5)
         except: pass
 
-    # Leveling für ALLE User
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
     if guild_id not in data: data[guild_id] = {}
@@ -362,6 +358,7 @@ async def purge(interaction: discord.Interaction, amount: int):
 @owner_only()
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     global db_dirty
+    await interaction.response.defer()
     guild_id = str(interaction.guild.id)
     user_id = str(member.id)
     if guild_id not in data: data[guild_id] = {}
@@ -370,13 +367,14 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     db_dirty = True
     try: await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
-    await interaction.response.send_message(f'⚠️ {member.mention} gewarnt. Grund: {reason}')
+    await interaction.followup.send(f'⚠️ {member.mention} gewarnt. Grund: {reason}')
 
 @bot.tree.command(name="setnick", description="Ändert den Namen eines Users")
 @owner_only()
 async def setnick(interaction: discord.Interaction, member: discord.Member, nick: str):
+    await interaction.response.defer()
     await member.edit(nick=nick)
-    await interaction.response.send_message(f'✅ Nickname von {member} zu {nick} geändert.')
+    await interaction.followup.send(f'✅ Nickname von {member} zu {nick} geändert.')
 
 # ==========================================
 # --- ROLLEN VERWALTUNG (NUR OWNER) ---
@@ -386,18 +384,23 @@ role_group = app_commands.Group(name="role", description="Verwaltet Rollen")
 @role_group.command(name="add", description="Gibt einem User eine Rolle")
 @owner_only()
 async def role_add(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    # SOFORT antworten, damit Discord nicht abbricht
+    await interaction.response.defer(ephemeral=True)
     try:
         await member.add_roles(role)
-        await interaction.response.send_message("✅", ephemeral=True)
-    except: pass
+        await interaction.followup.send("✅", ephemeral=True)
+    except:
+        await interaction.followup.send("❌ Fehler (Höher als Bot?)", ephemeral=True)
 
 @role_group.command(name="remove", description="Entfernt eine Rolle von einem User")
 @owner_only()
 async def role_remove(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    await interaction.response.defer(ephemeral=True)
     try:
         await member.remove_roles(role)
-        await interaction.response.send_message("✅", ephemeral=True)
-    except: pass
+        await interaction.followup.send("✅", ephemeral=True)
+    except:
+        await interaction.followup.send("❌ Fehler", ephemeral=True)
 
 # ==========================================
 # --- MUSIC (FÜR ALLE) ---
@@ -596,7 +599,7 @@ class TicketView(discord.ui.View):
         await interaction.response.send_message(f'Ticket erstellt: {channel.mention}', ephemeral=True)
 
 @bot.tree.command(name="ticket", description="Erstellt ein Ticket Panel")
-@owner_only() # Nur Owner dürfen das Panel erstellen
+@owner_only()
 async def ticket(interaction: discord.Interaction):
     embed = discord.Embed(title="🎟️ Support Tickets", description="Klicke auf den Button um ein Ticket zu öffnen!", color=discord.Color.green())
     await interaction.response.send_message(embed=embed, view=TicketView())
@@ -641,8 +644,10 @@ async def dashboard(interaction: discord.Interaction):
 # ==========================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    # Wenn jemand nicht auf der Owner-Liste steht, einfach komplett ignorieren (kein Feedback)
     if isinstance(error, app_commands.CheckFailure):
+        # Wenn jemand nicht berechtigt ist, zeige eine unsichtbare Ladeanimation, die sofort verschwindet
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         return
     else:
         print(f"Slash Command Error: {error}")
