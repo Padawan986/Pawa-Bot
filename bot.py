@@ -30,16 +30,17 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # ==========================================
-# --- WHITELIST (NUR EUR BEIDE ACCOUNTS) ---
+# --- OWNER WHITELIST (FÜR ADMIN CMDS) ---
 # ==========================================
-WHITELIST = [1216316535006691348, 1304449108177588286]
+OWNER_IDS = [1216316535006691348, 1304449108177588286]
 
-@bot.tree.check
-async def global_whitelist_check(interaction: discord.Interaction) -> bool:
-    # Wenn die User-ID nicht in der Whitelist ist, passiert gar nichts (still)
-    if interaction.user.id not in WHITELIST:
-        raise app_commands.CheckFailure()
-    return True
+def owner_only():
+    """Custom Check: Lässt den Befehl komplett stillschweigend scheitern, wenn der User nicht in der Owner-Liste steht."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in OWNER_IDS:
+            raise app_commands.CheckFailure() # Bricht still ab
+        return True
+    return app_commands.check(predicate)
 
 # ==========================================
 # --- MULTI-SERVER JSON DATENBANK & GITHUB ---
@@ -50,9 +51,7 @@ data = {}
 def load_db():
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPO")
-    if not token or not repo:
-        print("⚠️ Keine GitHub Tokens gefunden. Starte mit leerer Datenbank.")
-        return
+    if not token or not repo: return
     try:
         url = f"https://api.github.com/repos/{repo}/contents/"
         headers = {"Authorization": f"token {token}"}
@@ -60,12 +59,9 @@ def load_db():
         if r.status_code == 200:
             for file in r.json():
                 if file["name"].endswith("-db.json"):
-                    print(f"📥 Lade {file['name']} von GitHub...")
                     file_content = requests.get(file["download_url"]).json()
                     data.update(file_content)
             print(f"✅ {len(data)} Server-Datenbanken von GitHub geladen!")
-        else:
-            print("Keine bestehenden Datenbanken auf GitHub gefunden.")
     except Exception as e:
         print(f"Fehler beim Laden von GitHub: {e}")
 
@@ -98,7 +94,6 @@ def save_and_sync():
                 "sha": sha
             }
             requests.put(api_url, headers=headers, json=payload)
-        
         db_dirty = False
         print("✅ Alle Server-Datenbanken auf GitHub gesichert!")
     except Exception as e:
@@ -237,8 +232,8 @@ class AppealDecisionView(discord.ui.View):
 
     @discord.ui.button(label="Annehmen", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.manage_messages:
-            return await interaction.response.send_message("Du hast keine Rechte dafür!", ephemeral=True)
+        if interaction.user.id not in OWNER_IDS:
+            return # Nur Owner dürfen annehmen
         guild = interaction.guild
         user = await bot.fetch_user(self.user_id)
         try:
@@ -256,8 +251,8 @@ class AppealDecisionView(discord.ui.View):
 
     @discord.ui.button(label="Ablehnen", style=discord.ButtonStyle.red)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.user.guild_permissions.manage_messages:
-            return await interaction.response.send_message("Du hast keine Rechte dafür!", ephemeral=True)
+        if interaction.user.id not in OWNER_IDS:
+            return # Nur Owner dürfen ablehnen
         user = await bot.fetch_user(self.user_id)
         try: await user.send("❌ Dein Einspruch wurde abgelehnt. Die Strafe bleibt bestehen.")
         except: pass
@@ -284,11 +279,8 @@ async def on_message(message):
     global db_dirty
     if message.author.bot or not message.guild: return
 
-    # Whitelist gilt auch für das Levelsystem (nur whitelisted User bekommen XP/Coins)
-    if message.author.id not in WHITELIST: return
-
     if "discord.gg" in message.content or "http://" in message.content:
-        if not message.author.guild_permissions.manage_messages:
+        if message.author.id not in OWNER_IDS: # Normale User dürfen keine Links
             try:
                 await message.delete()
                 await message.channel.send(f"{message.author.mention} Keine Links erlaubt!", delete_after=3)
@@ -302,6 +294,7 @@ async def on_message(message):
             await message.channel.send(f"{message.author.mention} wurde wegen Spam gemutet.", delete_after=5)
         except: pass
 
+    # Leveling für ALLE User
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
     if guild_id not in data: data[guild_id] = {}
@@ -319,60 +312,54 @@ async def on_message(message):
     db_dirty = True
 
 # ==========================================
-# --- MODERATION ---
+# --- ADMIN MODERATION (NUR OWNER) ---
 # ==========================================
 @bot.tree.command(name="ban", description="Bannt einen User")
-@app_commands.checks.has_permissions(ban_members=True)
+@owner_only()
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
     embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gebannt!", color=discord.Color.red())
     embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "ban", reason or "Kein Grund", member.id)
-    try:
-        await member.send(embed=embed, view=view)
-        dm_status = "User wurde benachrichtigt."
-    except: dm_status = "User hat DMs deaktiviert."
+    try: await member.send(embed=embed, view=view)
+    except: pass
     await member.ban(reason=reason)
-    await interaction.followup.send(f'✅ {member} gebannt. Grund: {reason}\n*{dm_status}*')
+    await interaction.followup.send(f'✅ {member} gebannt. Grund: {reason}')
 
 @bot.tree.command(name="kick", description="Kickt einen User")
-@app_commands.checks.has_permissions(kick_members=True)
+@owner_only()
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
     embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gekickt!", color=discord.Color.red())
     embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "kick", reason or "Kein Grund", member.id)
-    try:
-        await member.send(embed=embed, view=view)
-        dm_status = "User wurde benachrichtigt."
-    except: dm_status = "User hat DMs deaktiviert."
+    try: await member.send(embed=embed, view=view)
+    except: pass
     await member.kick(reason=reason)
-    await interaction.followup.send(f'✅ {member} gekickt. Grund: {reason}\n*{dm_status}*')
+    await interaction.followup.send(f'✅ {member} gekickt. Grund: {reason}')
 
 @bot.tree.command(name="timeout", description="Gibt einem User einen Timeout")
-@app_commands.checks.has_permissions(moderate_members=True)
+@owner_only()
 async def timeout(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = None):
     await interaction.response.defer()
     embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} getimeoutet!", color=discord.Color.red())
     embed.add_field(name="Dauer", value=f"{minutes} Minuten", inline=False)
     embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "timeout", reason or "Kein Grund", member.id)
-    try:
-        await member.send(embed=embed, view=view)
-        dm_status = "User wurde benachrichtigt."
-    except: dm_status = "User hat DMs deaktiviert."
+    try: await member.send(embed=embed, view=view)
+    except: pass
     await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await interaction.followup.send(f'⏳ {member.mention} wurde für {minutes} Minuten getimeoutet.\n*{dm_status}*')
+    await interaction.followup.send(f'⏳ {member.mention} wurde für {minutes} Minuten getimeoutet.')
 
 @bot.tree.command(name="purge", description="Löscht Nachrichten")
-@app_commands.checks.has_permissions(manage_messages=True)
+@owner_only()
 async def purge(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     await interaction.channel.purge(limit=amount)
     await interaction.followup.send(f'🧹 {amount} Nachrichten gelöscht.', ephemeral=True)
 
 @bot.tree.command(name="warn", description="Verwarnt einen User")
-@app_commands.checks.has_permissions(manage_messages=True)
+@owner_only()
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     global db_dirty
     guild_id = str(interaction.guild.id)
@@ -386,26 +373,26 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     await interaction.response.send_message(f'⚠️ {member.mention} gewarnt. Grund: {reason}')
 
 @bot.tree.command(name="setnick", description="Ändert den Namen eines Users")
-@app_commands.checks.has_permissions(manage_nicknames=True)
+@owner_only()
 async def setnick(interaction: discord.Interaction, member: discord.Member, nick: str):
     await member.edit(nick=nick)
     await interaction.response.send_message(f'✅ Nickname von {member} zu {nick} geändert.')
 
 # ==========================================
-# --- ROLLEN VERWALTUNG (NO VERBOSE) ---
+# --- ROLLEN VERWALTUNG (NUR OWNER) ---
 # ==========================================
-role_group = app_commands.Group(name="role", description="Verwaltet Rollen (Still)")
+role_group = app_commands.Group(name="role", description="Verwaltet Rollen")
 
 @role_group.command(name="add", description="Gibt einem User eine Rolle")
-@app_commands.checks.has_permissions(manage_roles=True)
+@owner_only()
 async def role_add(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
     try:
         await member.add_roles(role)
         await interaction.response.send_message("✅", ephemeral=True)
-    except: pass # Komplett still bei Fehler
+    except: pass
 
 @role_group.command(name="remove", description="Entfernt eine Rolle von einem User")
-@app_commands.checks.has_permissions(manage_roles=True)
+@owner_only()
 async def role_remove(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
     try:
         await member.remove_roles(role)
@@ -413,7 +400,7 @@ async def role_remove(interaction: discord.Interaction, member: discord.Member, 
     except: pass
 
 # ==========================================
-# --- MUSIC ---
+# --- MUSIC (FÜR ALLE) ---
 # ==========================================
 @bot.tree.command(name="play", description="Spielt Musik ab (YouTube, Spotify, SoundCloud)")
 async def play(interaction: discord.Interaction, query: str):
@@ -462,7 +449,7 @@ async def stop(interaction: discord.Interaction):
     else: await interaction.response.send_message('Ich bin in keinem Voice Channel.')
 
 # ==========================================
-# --- ECONOMY ---
+# --- ECONOMY (FÜR ALLE) ---
 # ==========================================
 @bot.tree.command(name="balance", description="Zeigt deinen Kontostand")
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
@@ -499,7 +486,7 @@ async def gamble(interaction: discord.Interaction, amount: int):
     db_dirty = True
 
 # ==========================================
-# --- LEVELING & STATS ---
+# --- LEVELING & STATS (FÜR ALLE) ---
 # ==========================================
 @bot.tree.command(name="rank", description="Zeigt dein Level")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
@@ -523,7 +510,7 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- IMAGE MANIPULATION ---
+# --- IMAGE MANIPULATION (FÜR ALLE) ---
 # ==========================================
 @bot.tree.command(name="image", description="Bearbeite ein Profilbild")
 @app_commands.choices(effect=[
@@ -551,7 +538,7 @@ async def image(interaction: discord.Interaction, member: discord.Member = None,
     await interaction.followup.send(file=discord.File(buf, filename='manipulated.png'))
 
 # ==========================================
-# --- FUN & UTILITY ---
+# --- FUN & UTILITY (FÜR ALLE) ---
 # ==========================================
 @bot.tree.command(name="meme", description="Zeigt ein zufälliges Meme")
 async def meme(interaction: discord.Interaction):
@@ -583,7 +570,7 @@ async def avatar(interaction: discord.Interaction, member: discord.Member = None
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- SUGGESTIONS & TICKETS ---
+# --- SUGGESTIONS & TICKETS (FÜR ALLE / OWNER) ---
 # ==========================================
 @bot.tree.command(name="suggest", description="Mache einen Vorschlag")
 async def suggest(interaction: discord.Interaction, suggestion: str):
@@ -609,16 +596,16 @@ class TicketView(discord.ui.View):
         await interaction.response.send_message(f'Ticket erstellt: {channel.mention}', ephemeral=True)
 
 @bot.tree.command(name="ticket", description="Erstellt ein Ticket Panel")
-@app_commands.checks.has_permissions(manage_guild=True)
+@owner_only() # Nur Owner dürfen das Panel erstellen
 async def ticket(interaction: discord.Interaction):
     embed = discord.Embed(title="🎟️ Support Tickets", description="Klicke auf den Button um ein Ticket zu öffnen!", color=discord.Color.green())
     await interaction.response.send_message(embed=embed, view=TicketView())
 
 # ==========================================
-# --- GIVEAWAYS ---
+# --- GIVEAWAYS (NUR OWNER) ---
 # ==========================================
 @bot.tree.command(name="gstart", description="Startet ein Giveaway")
-@app_commands.checks.has_permissions(manage_messages=True)
+@owner_only()
 async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     await interaction.response.defer()
     embed = discord.Embed(title="🎉 GIVEAWAY 🎉", description=f"Preis: **{prize}**\nEndet in {minutes} Minuten.", color=discord.Color.gold())
@@ -634,13 +621,13 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     else: await interaction.channel.send('Niemand hat am Gewinnspiel teilgenommen.')
 
 # ==========================================
-# --- DASHBOARD & HELP ---
+# --- DASHBOARD & HELP (FÜR ALLE) ---
 # ==========================================
 @bot.tree.command(name="dashboard", description="Übersicht über alle Befehle")
 async def dashboard(interaction: discord.Interaction):
     embed = discord.Embed(title="🛠️ Server Dashboard", description="Übersicht aller Slash-Features", color=discord.Color.blue())
-    embed.add_field(name="Moderation", value="/ban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
-    embed.add_field(name="Rollen", value="/role add, /role remove", inline=False)
+    embed.add_field(name="Moderation (Nur Admins)", value="/ban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
+    embed.add_field(name="Rollen (Nur Admins)", value="/role add, /role remove", inline=False)
     embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Automatisch aktiv)", inline=False)
     embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
@@ -650,11 +637,11 @@ async def dashboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- ERROR HANDLER (STILL FÜR WHITELIST) ---
+# --- ERROR HANDLER (STILL FÜR OWNER CHECK) ---
 # ==========================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    # Wenn jemand nicht auf der Whitelist steht, einfach komplett ignorieren (kein Feedback)
+    # Wenn jemand nicht auf der Owner-Liste steht, einfach komplett ignorieren (kein Feedback)
     if isinstance(error, app_commands.CheckFailure):
         return
     else:
@@ -669,7 +656,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 # --- BOT START ---
 # ==========================================
-# Füge die Rollen-Gruppe zum Bot hinzu
 bot.tree.add_command(role_group)
 
 TOKEN = os.getenv("TOKEN")
