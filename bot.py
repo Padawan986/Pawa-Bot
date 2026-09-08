@@ -308,34 +308,33 @@ async def on_message(message):
     db_dirty = True
 
 # ==========================================
-# --- ADMIN MODERATION (NUR OWNER) ---
+# --- ADMIN MODERATION (CLEAN EMBEDS) ---
 # ==========================================
 @bot.tree.command(name="ban", description="Bannt einen User")
 @owner_only()
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
     
-    # DM an User mit Appeal Button
     dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gebannt!", color=discord.Color.red())
     dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "ban", reason or "Kein Grund", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
 
-    # Ban ausführen
     try:
         await member.ban(reason=reason)
         succ, unsucc = 1, 0
     except:
         succ, unsucc = 0, 1
         
-    msg = (
-        f"✅ Successful bans: {succ}\n"
-        f"❌ Unsuccessful bans: {unsucc}\n"
-        f"📄 Reason: {reason or 'No reason.'}\n"
+    embed = discord.Embed(color=discord.Color.from_str("#2B2D31")) # Clean Dark Mode Color
+    embed.description = (
+        f"✅ Successful bans: **{succ}**\n"
+        f"❌ Unsuccessful bans: **{unsucc}**\n"
+        f"📄 Reason: **{reason or 'No reason.'}**\n"
         f"👤 Moderator: {interaction.user.mention}"
     )
-    await interaction.followup.send(msg)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="unban", description="Entbannt einen User anhand seiner ID")
 @owner_only()
@@ -348,13 +347,14 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str = No
     except:
         succ, unsucc = 0, 1
         
-    msg = (
-        f"✅ Successful unbans: {succ}\n"
-        f"❌ Unsuccessful unbans: {unsucc}\n"
-        f"📄 Reason: {reason or 'No reason.'}\n"
+    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
+    embed.description = (
+        f"✅ Successful unbans: **{succ}**\n"
+        f"❌ Unsuccessful unbans: **{unsucc}**\n"
+        f"📄 Reason: **{reason or 'No reason.'}**\n"
         f"👤 Moderator: {interaction.user.mention}"
     )
-    await interaction.followup.send(msg)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="kick", description="Kickt einen User")
 @owner_only()
@@ -373,13 +373,14 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     except:
         succ, unsucc = 0, 1
         
-    msg = (
-        f"✅ Successful kicks: {succ}\n"
-        f"❌ Unsuccessful kicks: {unsucc}\n"
-        f"📄 Reason: {reason or 'No reason.'}\n"
+    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
+    embed.description = (
+        f"✅ Successful kicks: **{succ}**\n"
+        f"❌ Unsuccessful kicks: **{unsucc}**\n"
+        f"📄 Reason: **{reason or 'No reason.'}**\n"
         f"👤 Moderator: {interaction.user.mention}"
     )
-    await interaction.followup.send(msg)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="timeout", description="Gibt einem User einen Timeout")
 @owner_only()
@@ -399,14 +400,15 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     except:
         succ, unsucc = 0, 1
         
-    msg = (
-        f"✅ Successful timeouts: {succ}\n"
-        f"❌ Unsuccessful timeouts: {unsucc}\n"
-        f"📄 Reason: {reason or 'No reason.'}\n"
-        f"⏳ Duration: {minutes} minutes\n"
+    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
+    embed.description = (
+        f"✅ Successful timeouts: **{succ}**\n"
+        f"❌ Unsuccessful timeouts: **{unsucc}**\n"
+        f"📄 Reason: **{reason or 'No reason.'}**\n"
+        f"⏳ Duration: **{minutes} minutes**\n"
         f"👤 Moderator: {interaction.user.mention}"
     )
-    await interaction.followup.send(msg)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="purge", description="Löscht Nachrichten")
 @owner_only()
@@ -429,13 +431,14 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     try: await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
 
-    msg = (
-        f"✅ Successful warns: 1\n"
-        f"❌ Unsuccessful warns: 0\n"
-        f"📄 Reason: {reason or 'No reason.'}\n"
+    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
+    embed.description = (
+        f"✅ Successful warns: **1**\n"
+        f"❌ Unsuccessful warns: **0**\n"
+        f"📄 Reason: **{reason or 'No reason.'}**\n"
         f"👤 Moderator: {interaction.user.mention}"
     )
-    await interaction.followup.send(msg)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="setnick", description="Ändert den Namen eines Users")
 @owner_only()
@@ -535,7 +538,7 @@ async def play(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
     if interaction.guild.voice_client is None:
         await interaction.user.voice.channel.connect()
-    elif interaction.guild.voice_client.channel != interaction.user.voice.channel:
+    elif interaction.guild.voice_client.channel != inpution.user.voice.channel:
         return await interaction.followup.send("Ich bin bereits in einem anderen Channel!")
 
     try:
