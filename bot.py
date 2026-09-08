@@ -23,11 +23,18 @@ try:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 except Exception as e:
-    print(f"Event Loop Setup Warnung: {e}")
+    print(f"Event Loop Setup Warning: {e}")
 
 # --- BOT SETUP ---
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+
+# ==========================================
+# --- HELPER: CLEAN EMBED ---
+# ==========================================
+def clean_embed(title=None, description=None):
+    """Erstellt ein Embed, das sich nahtlos in den dunklen Discord Hintergrund einfügt."""
+    return discord.Embed(title=title, description=description, color=discord.Color.from_str("#2B2D31"))
 
 # ==========================================
 # --- OWNER WHITELIST (FÜR ADMIN CMDS) ---
@@ -60,9 +67,9 @@ def load_db():
                 if file["name"].endswith("-db.json"):
                     file_content = requests.get(file["download_url"]).json()
                     data.update(file_content)
-            print(f"✅ {len(data)} Server-Datenbanken von GitHub geladen!")
+            print(f"Loaded {len(data)} server databases from GitHub!")
     except Exception as e:
-        print(f"Fehler beim Laden von GitHub: {e}")
+        print(f"Error loading from GitHub: {e}")
 
 def save_and_sync():
     global db_dirty
@@ -94,9 +101,9 @@ def save_and_sync():
             }
             requests.put(api_url, headers=headers, json=payload)
         db_dirty = False
-        print("✅ Alle Server-Datenbanken auf GitHub gesichert!")
+        print("All server databases synced to GitHub!")
     except Exception as e:
-        print(f"GitHub Sync Fehler: {e}")
+        print(f"GitHub Sync Error: {e}")
 
 @tasks.loop(minutes=5)
 async def backup_task():
@@ -151,13 +158,14 @@ def check_queue(guild_id, channel):
         guild = bot.get_guild(guild_id)
         if guild and guild.voice_client:
             guild.voice_client.play(next_source, after=lambda e: check_queue(guild_id, channel))
-            asyncio.run_coroutine_threadsafe(channel.send(f'🎵 Spielt jetzt: **{next_source.title}**'), bot.loop)
+            embed = clean_embed(description=f"Now playing: **{next_source.title}**")
+            asyncio.run_coroutine_threadsafe(channel.send(embed=embed), bot.loop)
 
 # ==========================================
 # --- KEEP ALIVE WEB SERVER (FÜR RENDER) ---
 # ==========================================
 async def handle(request):
-    return web.Response(text="Bot ist online!")
+    return web.Response(text="Bot is online!")
 app = web.Application()
 app.add_routes([web.get('/', handle)])
 
@@ -167,12 +175,12 @@ async def start_webserver():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"🌐 Webserver für Keep-Alive auf Port {port} gestartet.")
+    print(f"Keep-Alive webserver started on port {port}.")
 
 # ==========================================
-# --- APPEAL SYSTEM (EINSPRÜCHE) ---
+# --- APPEAL SYSTEM ---
 # ==========================================
-class AppealModal(discord.ui.Modal, title='Einspruch einlegen'):
+class AppealModal(discord.ui.Modal, title='Submit Appeal'):
     def __init__(self, guild_id, action_type, reason, user_id):
         super().__init__()
         self.guild_id = guild_id
@@ -180,7 +188,7 @@ class AppealModal(discord.ui.Modal, title='Einspruch einlegen'):
         self.reason = reason
         self.user_id = user_id
 
-    antwort = discord.ui.TextInput(label='Warum sollen wir die Strafe aufheben?', style=discord.TextStyle.paragraph, max_length=500)
+    antwort = discord.ui.TextInput(label='Why should we lift the punishment?', style=discord.TextStyle.paragraph, max_length=500)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = bot.get_guild(self.guild_id)
@@ -196,19 +204,21 @@ class AppealModal(discord.ui.Modal, title='Einspruch einlegen'):
                     overwrites[role] = discord.PermissionOverwrite(view_channel=True)
             appeals_channel = await guild.create_text_channel("appeals", overwrites=overwrites)
         
-        embed = discord.Embed(title="🚨 Neuer Einspruch", color=discord.Color.orange())
+        embed = clean_embed(title="New Appeal")
         embed.add_field(name="User", value=f"<@{self.user_id}> ({self.user_id})", inline=False)
-        embed.add_field(name="Strafe", value=self.action_type, inline=False)
-        embed.add_field(name="Originalgrund", value=self.reason, inline=False)
-        embed.add_field(name="Einspruch des Users", value=self.antwort.value, inline=False)
+        embed.add_field(name="Punishment", value=self.action_type, inline=False)
+        embed.add_field(name="Original Reason", value=self.reason, inline=False)
+        embed.add_field(name="User's Appeal", value=self.antwort.value, inline=False)
         
         view = AppealDecisionView(self.user_id, self.action_type)
         await appeals_channel.send(embed=embed, view=view)
-        await interaction.response.send_message("Dein Einspruch wurde erfolgreich eingereicht! Das Team wird sich bald darum kümmern.", ephemeral=True)
+        
+        resp_embed = clean_embed(description="Your appeal has been submitted successfully. The team will review it shortly.")
+        await interaction.response.send_message(embed=resp_embed, ephemeral=True)
 
 class DMAppealButton(discord.ui.Button):
     def __init__(self, guild_id, action_type, reason, user_id):
-        super().__init__(label="Einspruch einlegen", style=discord.ButtonStyle.success, custom_id=f"appeal_{guild_id}_{action_type}")
+        super().__init__(label="Submit Appeal", style=discord.ButtonStyle.success, custom_id=f"appeal_{guild_id}_{action_type}")
         self.guild_id = guild_id
         self.action_type = action_type
         self.reason = reason
@@ -229,7 +239,7 @@ class AppealDecisionView(discord.ui.View):
         self.user_id = user_id
         self.action_type = action_type
 
-    @discord.ui.button(label="Annehmen", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in OWNER_IDS: return
         guild = interaction.guild
@@ -241,32 +251,36 @@ class AppealDecisionView(discord.ui.View):
                 if member: await member.timeout(None)
             channel = guild.system_channel or guild.text_channels[0]
             invite = await channel.create_invite(max_uses=1, unique=True)
-            try: await user.send(f"✅ Dein Einspruch wurde angenommen! Du kannst hier wieder joinen: {invite.url}")
+            try: await user.send(f"Your appeal has been accepted! You can rejoin here: {invite.url}")
             except: pass
-            await interaction.response.edit_message(content=f"✅ Angenommen von {interaction.user.mention}. User wurde benachrichtigt.", view=None)
+            
+            embed = clean_embed(description=f"Appeal accepted by {interaction.user.mention}. User has been notified.")
+            await interaction.response.edit_message(embed=embed, view=None)
         except Exception as e:
-            await interaction.response.send_message(f"Fehler: {e}", ephemeral=True)
+            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
 
-    @discord.ui.button(label="Ablehnen", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in OWNER_IDS: return
         user = await bot.fetch_user(self.user_id)
-        try: await user.send("❌ Dein Einspruch wurde abgelehnt. Die Strafe bleibt bestehen.")
+        try: await user.send("Your appeal has been rejected. The punishment remains in place.")
         except: pass
-        await interaction.response.edit_message(content=f"❌ Abgelehnt von {interaction.user.mention}. User wurde benachrichtigt.", view=None)
+        
+        embed = clean_embed(description=f"Appeal rejected by {interaction.user.mention}. User has been notified.")
+        await interaction.response.edit_message(embed=embed, view=None)
 
 # ==========================================
 # --- EVENTS ---
 # ==========================================
 @bot.event
 async def on_ready():
-    print(f'🟢 MEGA BOT ONLINE: {bot.user.name}')
+    print(f'MEGA BOT ONLINE: {bot.user.name}')
     load_db()
     try:
         synced = await bot.tree.sync()
-        print(f'✅ {len(synced)} Slash Commands synchronisiert!')
+        print(f'Synced {len(synced)} slash commands!')
     except Exception as e:
-        print(f"Fehler beim Syncen der Commands: {e}")
+        print(f"Error syncing commands: {e}")
     bot.spam_cache = {}
     if not backup_task.is_running(): backup_task.start()
     bot.loop.create_task(start_webserver())
@@ -280,7 +294,8 @@ async def on_message(message):
         if message.author.id not in OWNER_IDS:
             try:
                 await message.delete()
-                await message.channel.send(f"{message.author.mention} Keine Links erlaubt!", delete_after=3)
+                embed = clean_embed(description=f"{message.author.mention}, no links are allowed!")
+                await message.channel.send(embed=embed, delete_after=3)
             except: pass
 
     user_msgs = bot.spam_cache.setdefault(message.author.id, [])
@@ -288,7 +303,8 @@ async def on_message(message):
     if len([t for t in user_msgs if t > datetime.now() - timedelta(seconds=5)]) > 5:
         try:
             await message.author.timeout(timedelta(minutes=1), reason="Spam")
-            await message.channel.send(f"{message.author.mention} wurde wegen Spam gemutet.", delete_after=5)
+            embed = clean_embed(description=f"{message.author.mention} has been muted for spamming.")
+            await message.channel.send(embed=embed, delete_after=5)
         except: pass
 
     guild_id = str(message.guild.id)
@@ -304,20 +320,21 @@ async def on_message(message):
     if user_data["xp"] >= xp_needed:
         user_data["level"] += 1
         user_data["xp"] -= xp_needed
-        await message.channel.send(f"🎉 {message.author.mention} ist Level {user_data['level']} aufgestiegen!")
+        embed = clean_embed(description=f"{message.author.mention} has reached Level {user_data['level']}!")
+        await message.channel.send(embed=embed)
     db_dirty = True
 
 # ==========================================
-# --- ADMIN MODERATION (CLEAN EMBEDS) ---
+# --- ADMIN MODERATION (NUR OWNER) ---
 # ==========================================
-@bot.tree.command(name="ban", description="Bannt einen User")
+@bot.tree.command(name="ban", description="Bans a user")
 @owner_only()
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
     
-    dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gebannt!", color=discord.Color.red())
-    dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
-    view = DMAppealView(interaction.guild_id, "ban", reason or "Kein Grund", member.id)
+    dm_embed = clean_embed(title=f"You have been banned from {interaction.guild.name}!")
+    dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+    view = DMAppealView(interaction.guild_id, "ban", reason or "No reason", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
 
@@ -327,16 +344,14 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     except:
         succ, unsucc = 0, 1
         
-    embed = discord.Embed(color=discord.Color.from_str("#2B2D31")) # Clean Dark Mode Color
-    embed.description = (
-        f"✅ Successful bans: **{succ}**\n"
-        f"❌ Unsuccessful bans: **{unsucc}**\n"
-        f"📄 Reason: **{reason or 'No reason.'}**\n"
-        f"👤 Moderator: {interaction.user.mention}"
-    )
+    embed = clean_embed(title="Ban Executed")
+    embed.add_field(name="Successful", value=str(succ), inline=True)
+    embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason.", inline=False)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=False)
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="unban", description="Entbannt einen User anhand seiner ID")
+@bot.tree.command(name="unban", description="Unbans a user by ID")
 @owner_only()
 async def unban(interaction: discord.Interaction, user_id: str, reason: str = None):
     await interaction.response.defer()
@@ -347,23 +362,21 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str = No
     except:
         succ, unsucc = 0, 1
         
-    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
-    embed.description = (
-        f"✅ Successful unbans: **{succ}**\n"
-        f"❌ Unsuccessful unbans: **{unsucc}**\n"
-        f"📄 Reason: **{reason or 'No reason.'}**\n"
-        f"👤 Moderator: {interaction.user.mention}"
-    )
+    embed = clean_embed(title="Unban Executed")
+    embed.add_field(name="Successful", value=str(succ), inline=True)
+    embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason.", inline=False)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=False)
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="kick", description="Kickt einen User")
+@bot.tree.command(name="kick", description="Kicks a user")
 @owner_only()
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
     
-    dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gekickt!", color=discord.Color.red())
-    dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
-    view = DMAppealView(interaction.guild_id, "kick", reason or "Kein Grund", member.id)
+    dm_embed = clean_embed(title=f"You have been kicked from {interaction.guild.name}!")
+    dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+    view = DMAppealView(interaction.guild_id, "kick", reason or "No reason", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
 
@@ -373,24 +386,22 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     except:
         succ, unsucc = 0, 1
         
-    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
-    embed.description = (
-        f"✅ Successful kicks: **{succ}**\n"
-        f"❌ Unsuccessful kicks: **{unsucc}**\n"
-        f"📄 Reason: **{reason or 'No reason.'}**\n"
-        f"👤 Moderator: {interaction.user.mention}"
-    )
+    embed = clean_embed(title="Kick Executed")
+    embed.add_field(name="Successful", value=str(succ), inline=True)
+    embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason.", inline=False)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=False)
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="timeout", description="Gibt einem User einen Timeout")
+@bot.tree.command(name="timeout", description="Times out a user")
 @owner_only()
 async def timeout(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = None):
     await interaction.response.defer()
     
-    dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} getimeoutet!", color=discord.Color.red())
-    dm_embed.add_field(name="Dauer", value=f"{minutes} Minuten", inline=False)
-    dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
-    view = DMAppealView(interaction.guild_id, "timeout", reason or "Kein Grund", member.id)
+    dm_embed = clean_embed(title=f"You have been timed out in {interaction.guild.name}!")
+    dm_embed.add_field(name="Duration", value=f"{minutes} minutes", inline=False)
+    dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+    view = DMAppealView(interaction.guild_id, "timeout", reason or "No reason", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
 
@@ -400,24 +411,23 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     except:
         succ, unsucc = 0, 1
         
-    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
-    embed.description = (
-        f"✅ Successful timeouts: **{succ}**\n"
-        f"❌ Unsuccessful timeouts: **{unsucc}**\n"
-        f"📄 Reason: **{reason or 'No reason.'}**\n"
-        f"⏳ Duration: **{minutes} minutes**\n"
-        f"👤 Moderator: {interaction.user.mention}"
-    )
+    embed = clean_embed(title="Timeout Executed")
+    embed.add_field(name="Successful", value=str(succ), inline=True)
+    embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
+    embed.add_field(name="Duration", value=f"{minutes} minutes", inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason.", inline=False)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=False)
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="purge", description="Löscht Nachrichten")
+@bot.tree.command(name="purge", description="Deletes messages")
 @owner_only()
 async def purge(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     await interaction.channel.purge(limit=amount)
-    await interaction.followup.send(f'🧹 {amount} Nachrichten gelöscht.', ephemeral=True)
+    embed = clean_embed(description=f"Deleted {amount} messages.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="warn", description="Verwarnt einen User")
+@bot.tree.command(name="warn", description="Warns a user")
 @owner_only()
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     global db_dirty
@@ -428,65 +438,71 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     data[guild_id][user_id]["warns"] += 1
     db_dirty = True
-    try: await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
+    try: 
+        dm_embed = clean_embed(description=f"You have been warned in {interaction.guild.name}. Reason: {reason}")
+        await member.send(embed=dm_embed)
     except: pass
 
-    embed = discord.Embed(color=discord.Color.from_str("#2B2D31"))
-    embed.description = (
-        f"✅ Successful warns: **1**\n"
-        f"❌ Unsuccessful warns: **0**\n"
-        f"📄 Reason: **{reason or 'No reason.'}**\n"
-        f"👤 Moderator: {interaction.user.mention}"
-    )
+    embed = clean_embed(title="Warning Issued")
+    embed.add_field(name="Successful", value="1", inline=True)
+    embed.add_field(name="Unsuccessful", value="0", inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason.", inline=False)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=False)
     await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="setnick", description="Ändert den Namen eines Users")
+@bot.tree.command(name="setnick", description="Changes a user's nickname")
 @owner_only()
 async def setnick(interaction: discord.Interaction, member: discord.Member, nick: str):
     await interaction.response.defer()
     try:
         await member.edit(nick=nick)
-        await interaction.followup.send(f"✅ Nickname von {member} zu {nick} geändert.")
+        embed = clean_embed(description=f"Nickname of {member} has been changed to {nick}.")
+        await interaction.followup.send(embed=embed)
     except:
-        await interaction.followup.send("❌ Fehlende Rechte.")
+        embed = clean_embed(description="Missing permissions to change this nickname.")
+        await interaction.followup.send(embed=embed)
 
 # ==========================================
 # --- ROLLEN VERWALTUNG (NUR OWNER) ---
 # ==========================================
-role_group = app_commands.Group(name="role", description="Verwaltet Rollen")
+role_group = app_commands.Group(name="role", description="Manages roles")
 
-@role_group.command(name="add", description="Gibt einem User eine Rolle")
+@role_group.command(name="add", description="Adds a role to a user")
 @owner_only()
 async def role_add(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
     await interaction.response.defer(ephemeral=True)
     try:
         await member.add_roles(role)
-        await interaction.followup.send("✅", ephemeral=True)
+        embed = clean_embed(description=f"Added {role.name} to {member.name}.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
     except:
-        await interaction.followup.send("❌ Fehler (Höher als Bot?)", ephemeral=True)
+        embed = clean_embed(description="Error (Role higher than bot?)")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
-@role_group.command(name="remove", description="Entfernt eine Rolle von einem User")
+@role_group.command(name="remove", description="Removes a role from a user")
 @owner_only()
 async def role_remove(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
     await interaction.response.defer(ephemeral=True)
     try:
         await member.remove_roles(role)
-        await interaction.followup.send("✅", ephemeral=True)
+        embed = clean_embed(description=f"Removed {role.name} from {member.name}.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
     except:
-        await interaction.followup.send("❌ Fehler", ephemeral=True)
+        embed = clean_embed(description="Error")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="create-role", description="Erstellt eine Rolle mit Presets und Hierarchie")
+@bot.tree.command(name="create-role", description="Creates a role with presets and hierarchy")
 @owner_only()
 @app_commands.choices(preset=[
-    app_commands.Choice(name="Admin (Alle Rechte)", value="admin"),
+    app_commands.Choice(name="Admin (All permissions)", value="admin"),
     app_commands.Choice(name="Moderator (Kick, Mute, Manage)", value="moderator"),
-    app_commands.Choice(name="Mitglied (Standard)", value="member"),
-    app_commands.Choice(name="Muted (Stummgeschaltet)", value="muted")
+    app_commands.Choice(name="Member (Standard)", value="member"),
+    app_commands.Choice(name="Muted (Muted)", value="muted")
 ])
 @app_commands.choices(position=[
-    app_commands.Choice(name="Ganz unten", value="bottom"),
-    app_commands.Choice(name="Mitte", value="middle"),
-    app_commands.Choice(name="Ganz oben (unter Bot)", value="top")
+    app_commands.Choice(name="Bottom", value="bottom"),
+    app_commands.Choice(name="Middle", value="middle"),
+    app_commands.Choice(name="Top (below bot)", value="top")
 ])
 async def create_role(interaction: discord.Interaction, name: str, preset: app_commands.Choice[str] = None, position: app_commands.Choice[str] = None, color: str = None):
     await interaction.response.defer(ephemeral=True)
@@ -494,10 +510,14 @@ async def create_role(interaction: discord.Interaction, name: str, preset: app_c
     role_color = discord.Color.default()
     if color:
         try: role_color = discord.Color(int(color.replace("#", ""), 16))
-        except: return await interaction.followup.send("❌ Ungültige Farbe! Bitte als Hex-Code (z.B. `FF0000` für Rot).", ephemeral=True)
+        except: 
+            embed = clean_embed(description="Invalid color! Please use a hex code (e.g., `FF0000` for red).")
+            return await interaction.followup.send(embed=embed, ephemeral=True)
     
-    try: new_role = await interaction.guild.create_role(name=name, color=role_color, reason=f"Erstellt von {interaction.user}")
-    except Exception as e: return await interaction.followup.send(f"❌ Fehler beim Erstellen: {e}", ephemeral=True)
+    try: new_role = await interaction.guild.create_role(name=name, color=role_color, reason=f"Created by {interaction.user}")
+    except Exception as e: 
+        embed = clean_embed(description=f"Error creating role: {e}")
+        return await interaction.followup.send(embed=embed, ephemeral=True)
         
     permissions = discord.Permissions.none()
     preset_val = preset.value if preset else "member"
@@ -526,67 +546,89 @@ async def create_role(interaction: discord.Interaction, name: str, preset: app_c
         elif pos_val == "middle": await new_role.edit(position=max(1, bot_highest_pos // 2))
     except: pass
             
-    await interaction.followup.send(f"✅ Rolle `{name}` wurde erstellt.\n**Preset:** {preset_val}\n**Position:** {pos_val}", ephemeral=True)
+    embed = clean_embed(title="Role Created")
+    embed.add_field(name="Name", value=name, inline=True)
+    embed.add_field(name="Preset", value=preset_val, inline=True)
+    embed.add_field(name="Position", value=pos_val, inline=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ==========================================
 # --- MUSIC (FÜR ALLE) ---
 # ==========================================
-@bot.tree.command(name="play", description="Spielt Musik ab (YouTube, Spotify, SoundCloud)")
+@bot.tree.command(name="play", description="Plays music (YouTube, Spotify, SoundCloud)")
 async def play(interaction: discord.Interaction, query: str):
     if not interaction.user.voice:
-        return await interaction.response.send_message('Du musst in einem Voice Channel sein!', ephemeral=True)
+        embed = clean_embed(description="You must be in a voice channel!")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     await interaction.response.defer()
     if interaction.guild.voice_client is None:
         await interaction.user.voice.channel.connect()
-    elif interaction.guild.voice_client.channel != inpution.user.voice.channel:
-        return await interaction.followup.send("Ich bin bereits in einem anderen Channel!")
+    elif interaction.guild.voice_client.channel != interaction.user.voice.channel:
+        embed = clean_embed(description="I am already in another channel!")
+        return await interaction.followup.send(embed=embed)
 
     try:
         result = await YTDLSource.from_url(query, loop=bot.loop)
         if isinstance(result, list):
-            if not result: return await interaction.followup.send("Konnte keine Songs finden.")
+            if not result: 
+                embed = clean_embed(description="Could not find any songs.")
+                return await interaction.followup.send(embed=embed)
             first_song = result.pop(0)
             queues.setdefault(interaction.guild.id, []).extend(result)
             if interaction.guild.voice_client.is_playing():
-                await interaction.followup.send(f'➕ Playlist hinzugefügt: **{len(result)+1} Songs** in der Warteschlange!')
+                embed = clean_embed(description=f"Playlist added: **{len(result)+1} songs** in the queue!")
+                await interaction.followup.send(embed=embed)
             else:
                 interaction.guild.voice_client.play(first_song, after=lambda e: check_queue(interaction.guild.id, interaction.channel))
-                await interaction.followup.send(f'🎵 Spielt jetzt: **{first_song.title}**\n➕ {len(result)} weitere Songs zur Warteschlange hinzugefügt!')
+                embed = clean_embed(description=f"Now playing: **{first_song.title}**\nAdded {len(result)} more songs to the queue.")
+                await interaction.followup.send(embed=embed)
         else:
             if interaction.guild.voice_client.is_playing():
                 queues.setdefault(interaction.guild.id, []).append(result)
-                await interaction.followup.send(f'➕ Zur Queue: **{result.title}**')
+                embed = clean_embed(description=f"Added to queue: **{result.title}**")
+                await interaction.followup.send(embed=embed)
             else:
                 interaction.guild.voice_client.play(result, after=lambda e: check_queue(interaction.guild.id, interaction.channel))
-                await interaction.followup.send(f'🎵 Spielt jetzt: **{result.title}**')
+                embed = clean_embed(description=f"Now playing: **{result.title}**")
+                await interaction.followup.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"Fehler beim Abspielen: {e}")
+        embed = clean_embed(description=f"Error playing song: {e}")
+        await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="skip", description="Überspringt den Song")
+@bot.tree.command(name="skip", description="Skips the current song")
 async def skip(interaction: discord.Interaction):
     if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
         interaction.guild.voice_client.stop()
-        await interaction.response.send_message('⏭️ Song übersprungen!')
-    else: await interaction.response.send_message('Es läuft keine Musik!')
+        embed = clean_embed(description="Song skipped.")
+        await interaction.response.send_message(embed=embed)
+    else: 
+        embed = clean_embed(description="No music is playing!")
+        await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="stop", description="Stoppt die Musik")
+@bot.tree.command(name="stop", description="Stops the music")
 async def stop(interaction: discord.Interaction):
     if interaction.guild.voice_client:
         queues[interaction.guild.id] = []
         await interaction.guild.voice_client.disconnect()
-        await interaction.response.send_message('⏹️ Musik gestoppt. Tschüss!')
-    else: await interaction.response.send_message('Ich bin in keinem Voice Channel.')
+        embed = clean_embed(description="Music stopped. Goodbye!")
+        await interaction.response.send_message(embed=embed)
+    else: 
+        embed = clean_embed(description="I am not in a voice channel.")
+        await interaction.response.send_message(embed=embed)
 
 # ==========================================
 # --- ECONOMY (FÜR ALLE) ---
 # ==========================================
-@bot.tree.command(name="balance", description="Zeigt deinen Kontostand")
+@bot.tree.command(name="balance", description="Shows your balance")
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
     user_data = data.get(str(interaction.guild.id), {}).get(str(member.id), {"balance": 0})
-    await interaction.response.send_message(f'💰 {member.name} hat {user_data["balance"]} Coins.')
+    embed = clean_embed(title="Balance")
+    embed.add_field(name="User", value=member.mention, inline=True)
+    embed.add_field(name="Coins", value=str(user_data["balance"]), inline=True)
+    await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="daily", description="Hole dir deine täglichen Coins")
+@bot.tree.command(name="daily", description="Claim your daily coins")
 async def daily(interaction: discord.Interaction):
     global db_dirty
     guild_id = str(interaction.guild.id)
@@ -595,53 +637,62 @@ async def daily(interaction: discord.Interaction):
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     data[guild_id][user_id]["balance"] += 500
     db_dirty = True
-    await interaction.response.send_message('💰 Du hast deine 500 täglichen Coins abgeholt!')
+    embed = clean_embed(description="You have claimed your 500 daily coins!")
+    await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="gamble", description="Spiele um deine Coins")
+@bot.tree.command(name="gamble", description="Gamble your coins")
 async def gamble(interaction: discord.Interaction, amount: int):
     global db_dirty
-    if amount <= 0: return await interaction.response.send_message("Betrag muss > 0 sein.")
+    if amount <= 0: 
+        embed = clean_embed(description="Amount must be greater than 0.")
+        return await interaction.response.send_message(embed=embed)
     guild_id = str(interaction.guild.id)
     user_id = str(interaction.user.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
-    if data[guild_id][user_id]["balance"] < amount: return await interaction.response.send_message("Du hast nicht genug Coins.")
+    if data[guild_id][user_id]["balance"] < amount: 
+        embed = clean_embed(description="You do not have enough coins.")
+        return await interaction.response.send_message(embed=embed)
     if random.randint(1, 2) == 1:
         data[guild_id][user_id]["balance"] += amount
-        await interaction.response.send_message(f'🎉 Du hast {amount*2} Coins gewonnen!')
+        embed = clean_embed(description=f"You won {amount*2} coins!")
+        await interaction.response.send_message(embed=embed)
     else:
         data[guild_id][user_id]["balance"] -= amount
-        await interaction.response.send_message('💀 Du hast alles verloren.')
+        embed = clean_embed(description="You lost everything.")
+        await interaction.response.send_message(embed=embed)
     db_dirty = True
 
 # ==========================================
 # --- LEVELING & STATS (FÜR ALLE) ---
 # ==========================================
-@bot.tree.command(name="rank", description="Zeigt dein Level")
+@bot.tree.command(name="rank", description="Shows your level")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
     user_data = data.get(str(interaction.guild.id), {}).get(str(member.id), {"xp": 0, "level": 0})
-    embed = discord.Embed(title=f"Rang von {member.name}", color=discord.Color.gold())
-    embed.add_field(name="Level", value=user_data["level"])
-    embed.add_field(name="XP", value=user_data["xp"])
+    embed = clean_embed(title=f"Rank of {member.name}")
+    embed.add_field(name="Level", value=str(user_data["level"]), inline=True)
+    embed.add_field(name="XP", value=str(user_data["xp"]), inline=True)
     embed.set_thumbnail(url=member.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="leaderboard", description="Top 5 Server Mitglieder")
+@bot.tree.command(name="leaderboard", description="Top 5 server members")
 async def leaderboard(interaction: discord.Interaction):
     guild_data = data.get(str(interaction.guild.id), {})
     sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("level", 0), reverse=True)[:5]
-    embed = discord.Embed(title="🏆 Leaderboard", color=discord.Color.gold())
+    embed = clean_embed(title="Leaderboard")
+    if not sorted_users:
+        embed.description = "No data available yet."
     for i, (user_id, udata) in enumerate(sorted_users, 1):
         member = interaction.guild.get_member(int(user_id))
-        name = member.name if member else "Unbekannt"
+        name = member.name if member else "Unknown"
         embed.add_field(name=f"#{i} {name}", value=f"Level {udata.get('level', 0)} | {udata.get('xp', 0)} XP", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
 # --- IMAGE MANIPULATION (FÜR ALLE) ---
 # ==========================================
-@bot.tree.command(name="image", description="Bearbeite ein Profilbild")
+@bot.tree.command(name="image", description="Manipulate a profile picture")
 @app_commands.choices(effect=[
     app_commands.Choice(name="Blur", value="blur"),
     app_commands.Choice(name="Invert", value="invert"),
@@ -664,55 +715,61 @@ async def image(interaction: discord.Interaction, member: discord.Member = None,
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
-    await interaction.followup.send(file=discord.File(buf, filename='manipulated.png'))
+    
+    embed = clean_embed()
+    embed.set_image(url="attachment://manipulated.png")
+    await interaction.followup.send(embed=embed, file=discord.File(buf, filename='manipulated.png'))
 
 # ==========================================
 # --- FUN & UTILITY (FÜR ALLE) ---
 # ==========================================
-@bot.tree.command(name="meme", description="Zeigt ein zufälliges Meme")
+@bot.tree.command(name="meme", description="Shows a random meme")
 async def meme(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
         r = requests.get("https://meme-api.com/gimme")
         if r.status_code == 200:
-            embed = discord.Embed(title=r.json()['title'], color=discord.Color.random())
+            embed = clean_embed(title=r.json()['title'])
             embed.set_image(url=r.json()['url'])
             await interaction.followup.send(embed=embed)
-    except: await interaction.followup.send("Konnte gerade kein Meme laden.")
+    except: 
+        embed = clean_embed(description="Could not load a meme right now.")
+        await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="hug", description="Umarme jemanden")
+@bot.tree.command(name="hug", description="Hug someone")
 async def hug(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.send_message(f'🤗 {interaction.user.mention} umarmt {member.mention}!')
+    embed = clean_embed(description=f"{interaction.user.mention} hugged {member.mention}!")
+    await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="weather", description="Zeigt das Wetter in Celsius")
+@bot.tree.command(name="weather", description="Shows the weather in Celsius")
 async def weather(interaction: discord.Interaction, city: str):
     try:
-        r = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t+%w&lang=de&m")
-        await interaction.response.send_message(f'☁️ Wetter für {city}: {r.text}')
-    except: await interaction.response.send_message("Wetterdaten konnten nicht abgerufen werden.")
+        r = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t+%w&lang=en&m")
+        embed = clean_embed(title=f"Weather for {city}", description=r.text)
+        await interaction.response.send_message(embed=embed)
+    except: 
+        embed = clean_embed(description="Could not fetch weather data.")
+        await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="avatar", description="Zeigt das Avatar eines Users")
+@bot.tree.command(name="avatar", description="Shows a user's avatar")
 async def avatar(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
-    embed = discord.Embed(title=f"Avatar von {member.name}")
+    embed = clean_embed(title=f"Avatar of {member.name}")
     embed.set_image(url=member.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- SUGGESTIONS & TICKETS (FÜR ALLE / OWNER) ---
+# --- SUGGESTIONS & TICKETS ---
 # ==========================================
-@bot.tree.command(name="suggest", description="Mache einen Vorschlag")
+@bot.tree.command(name="suggest", description="Make a suggestion")
 async def suggest(interaction: discord.Interaction, suggestion: str):
-    embed = discord.Embed(title="💡 Neue Idee!", description=suggestion, color=discord.Color.blurple())
+    embed = clean_embed(title="New Suggestion", description=suggestion)
     embed.set_author(name=interaction.user.name, icon_url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
-    msg = await interaction.original_response()
-    await msg.add_reaction('✅')
-    await msg.add_reaction('❌')
 
 class TicketView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
-    @discord.ui.button(label="Ticket erstellen", style=discord.ButtonStyle.green, custom_id="create_ticket")
+    @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.green, custom_id="create_ticket")
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         overwrites = {
@@ -721,43 +778,62 @@ class TicketView(discord.ui.View):
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
         }
         channel = await guild.create_text_channel(f'ticket-{interaction.user.name}', overwrites=overwrites)
-        await channel.send(f'{interaction.user.mention} Willkommen im Ticket! Ein Teammitglied kümmert sich gleich.')
-        await interaction.response.send_message(f'Ticket erstellt: {channel.mention}', ephemeral=True)
+        embed = clean_embed(description=f"Welcome to your ticket {interaction.user.mention}. A team member will assist you shortly.")
+        await channel.send(embed=embed)
+        await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="ticket", description="Erstellt ein Ticket Panel")
+@bot.tree.command(name="ticket", description="Creates a ticket panel")
 @owner_only()
 async def ticket(interaction: discord.Interaction):
-    embed = discord.Embed(title="🎟️ Support Tickets", description="Klicke auf den Button um ein Ticket zu öffnen!", color=discord.Color.green())
+    embed = clean_embed(title="Support Tickets", description="Click the button below to open a ticket!")
     await interaction.response.send_message(embed=embed, view=TicketView())
 
 # ==========================================
 # --- GIVEAWAYS (NUR OWNER) ---
 # ==========================================
-@bot.tree.command(name="gstart", description="Startet ein Giveaway")
+class GiveawayView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.participants = []
+
+    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.primary, custom_id="enter_giveaway")
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.participants:
+            self.participants.append(interaction.user.id)
+            await interaction.response.send_message("You have entered the giveaway!", ephemeral=True)
+        else:
+            await interaction.response.send_message("You have already entered!", ephemeral=True)
+
+@bot.tree.command(name="gstart", description="Starts a giveaway")
 @owner_only()
 async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     await interaction.response.defer()
-    embed = discord.Embed(title="🎉 GIVEAWAY 🎉", description=f"Preis: **{prize}**\nEndet in {minutes} Minuten.", color=discord.Color.gold())
-    await interaction.followup.send(embed=embed)
+    view = GiveawayView()
+    embed = clean_embed(title="Giveaway", description=f"Prize: **{prize}**\nEnds in {minutes} minutes.\nClick the button to enter!")
+    await interaction.followup.send(embed=embed, view=view)
     msg = await interaction.original_response()
-    await msg.add_reaction('🎉')
+    
     await asyncio.sleep(minutes * 60)
     msg = await interaction.channel.fetch_message(msg.id)
-    users = [u async for u in msg.reactions[0].users() if not u.bot]
-    if users:
-        winner = random.choice(users)
-        await interaction.channel.send(f'🎉 Glückwunsch {winner.mention}! Du hast **{prize}** gewonnen!')
-    else: await interaction.channel.send('Niemand hat am Gewinnspiel teilgenommen.')
+    
+    if view.participants:
+        winner_id = random.choice(view.participants)
+        winner = await bot.fetch_user(winner_id)
+        win_embed = clean_embed(title="Giveaway Ended", description=f"Winner: {winner.mention}\nPrize: **{prize}**")
+        await interaction.channel.send(embed=win_embed)
+    else:
+        no_win_embed = clean_embed(title="Giveaway Ended", description="No one entered the giveaway.")
+        await interaction.channel.send(embed=no_win_embed)
 
 # ==========================================
 # --- DASHBOARD & HELP (FÜR ALLE) ---
 # ==========================================
-@bot.tree.command(name="dashboard", description="Übersicht über alle Befehle")
+@bot.tree.command(name="dashboard", description="Overview of all commands")
 async def dashboard(interaction: discord.Interaction):
-    embed = discord.Embed(title="🛠️ Server Dashboard", description="Übersicht aller Slash-Features", color=discord.Color.blue())
-    embed.add_field(name="Moderation (Nur Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
-    embed.add_field(name="Rollen (Nur Admins)", value="/role add, /role remove, /create-role", inline=False)
-    embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Automatisch aktiv)", inline=False)
+    embed = clean_embed(title="Server Dashboard", description="Overview of all slash commands")
+    embed.add_field(name="Moderation (Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
+    embed.add_field(name="Roles (Admins)", value="/role add, /role remove, /create-role", inline=False)
+    embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Active automatically)", inline=False)
     embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
@@ -778,9 +854,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         print(f"Slash Command Error: {error}")
         try:
             if interaction.response.is_done():
-                await interaction.followup.send('Ein Fehler ist aufgetreten.', ephemeral=True)
+                embed = clean_embed(description="An error occurred.")
+                await interaction.followup.send(embed=embed, ephemeral=True)
             else:
-                await interaction.response.send_message('Ein Fehler ist aufgetreten.', ephemeral=True)
+                embed = clean_embed(description="An error occurred.")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
         except: pass
 
 # ==========================================
@@ -790,6 +868,6 @@ bot.tree.add_command(role_group)
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    print("FEHLER: Token wurde nicht gefunden. Bitte stelle sicher, dass die Umgebungsvariable auf Render gesetzt ist.")
+    print("ERROR: Token not found. Please ensure the environment variable is set on Render.")
 else:
     bot.run(TOKEN)
