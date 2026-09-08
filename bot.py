@@ -314,38 +314,99 @@ async def on_message(message):
 @owner_only()
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
-    embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gebannt!", color=discord.Color.red())
-    embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
+    
+    # DM an User mit Appeal Button
+    dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gebannt!", color=discord.Color.red())
+    dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "ban", reason or "Kein Grund", member.id)
-    try: await member.send(embed=embed, view=view)
+    try: await member.send(embed=dm_embed, view=view)
     except: pass
-    await member.ban(reason=reason)
-    await interaction.followup.send(f'✅ {member} gebannt. Grund: {reason}')
+
+    # Ban ausführen
+    try:
+        await member.ban(reason=reason)
+        succ, unsucc = 1, 0
+    except:
+        succ, unsucc = 0, 1
+        
+    msg = (
+        f"✅ Successful bans: {succ}\n"
+        f"❌ Unsuccessful bans: {unsucc}\n"
+        f"📄 Reason: {reason or 'No reason.'}\n"
+        f"👤 Moderator: {interaction.user.mention}"
+    )
+    await interaction.followup.send(msg)
+
+@bot.tree.command(name="unban", description="Entbannt einen User anhand seiner ID")
+@owner_only()
+async def unban(interaction: discord.Interaction, user_id: str, reason: str = None):
+    await interaction.response.defer()
+    try:
+        user = await bot.fetch_user(int(user_id))
+        await interaction.guild.unban(user, reason=reason)
+        succ, unsucc = 1, 0
+    except:
+        succ, unsucc = 0, 1
+        
+    msg = (
+        f"✅ Successful unbans: {succ}\n"
+        f"❌ Unsuccessful unbans: {unsucc}\n"
+        f"📄 Reason: {reason or 'No reason.'}\n"
+        f"👤 Moderator: {interaction.user.mention}"
+    )
+    await interaction.followup.send(msg)
 
 @bot.tree.command(name="kick", description="Kickt einen User")
 @owner_only()
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = None):
     await interaction.response.defer()
-    embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gekickt!", color=discord.Color.red())
-    embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
+    
+    dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} gekickt!", color=discord.Color.red())
+    dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "kick", reason or "Kein Grund", member.id)
-    try: await member.send(embed=embed, view=view)
+    try: await member.send(embed=dm_embed, view=view)
     except: pass
-    await member.kick(reason=reason)
-    await interaction.followup.send(f'✅ {member} gekickt. Grund: {reason}')
+
+    try:
+        await member.kick(reason=reason)
+        succ, unsucc = 1, 0
+    except:
+        succ, unsucc = 0, 1
+        
+    msg = (
+        f"✅ Successful kicks: {succ}\n"
+        f"❌ Unsuccessful kicks: {unsucc}\n"
+        f"📄 Reason: {reason or 'No reason.'}\n"
+        f"👤 Moderator: {interaction.user.mention}"
+    )
+    await interaction.followup.send(msg)
 
 @bot.tree.command(name="timeout", description="Gibt einem User einen Timeout")
 @owner_only()
 async def timeout(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = None):
     await interaction.response.defer()
-    embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} getimeoutet!", color=discord.Color.red())
-    embed.add_field(name="Dauer", value=f"{minutes} Minuten", inline=False)
-    embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
+    
+    dm_embed = discord.Embed(title=f"🚨 Du wurdest auf {interaction.guild.name} getimeoutet!", color=discord.Color.red())
+    dm_embed.add_field(name="Dauer", value=f"{minutes} Minuten", inline=False)
+    dm_embed.add_field(name="Grund", value=reason or "Kein Grund angegeben", inline=False)
     view = DMAppealView(interaction.guild_id, "timeout", reason or "Kein Grund", member.id)
-    try: await member.send(embed=embed, view=view)
+    try: await member.send(embed=dm_embed, view=view)
     except: pass
-    await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await interaction.followup.send(f'⏳ {member.mention} wurde für {minutes} Minuten getimeoutet.')
+
+    try:
+        await member.timeout(timedelta(minutes=minutes), reason=reason)
+        succ, unsucc = 1, 0
+    except:
+        succ, unsucc = 0, 1
+        
+    msg = (
+        f"✅ Successful timeouts: {succ}\n"
+        f"❌ Unsuccessful timeouts: {unsucc}\n"
+        f"📄 Reason: {reason or 'No reason.'}\n"
+        f"⏳ Duration: {minutes} minutes\n"
+        f"👤 Moderator: {interaction.user.mention}"
+    )
+    await interaction.followup.send(msg)
 
 @bot.tree.command(name="purge", description="Löscht Nachrichten")
 @owner_only()
@@ -367,14 +428,24 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     db_dirty = True
     try: await member.send(f"⚠️ Du wurdest auf {interaction.guild.name} verwarnt. Grund: {reason}")
     except: pass
-    await interaction.followup.send(f'⚠️ {member.mention} gewarnt. Grund: {reason}')
+
+    msg = (
+        f"✅ Successful warns: 1\n"
+        f"❌ Unsuccessful warns: 0\n"
+        f"📄 Reason: {reason or 'No reason.'}\n"
+        f"👤 Moderator: {interaction.user.mention}"
+    )
+    await interaction.followup.send(msg)
 
 @bot.tree.command(name="setnick", description="Ändert den Namen eines Users")
 @owner_only()
 async def setnick(interaction: discord.Interaction, member: discord.Member, nick: str):
     await interaction.response.defer()
-    await member.edit(nick=nick)
-    await interaction.followup.send(f'✅ Nickname von {member} zu {nick} geändert.')
+    try:
+        await member.edit(nick=nick)
+        await interaction.followup.send(f"✅ Nickname von {member} zu {nick} geändert.")
+    except:
+        await interaction.followup.send("❌ Fehlende Rechte.")
 
 # ==========================================
 # --- ROLLEN VERWALTUNG (NUR OWNER) ---
@@ -417,66 +488,40 @@ async def role_remove(interaction: discord.Interaction, member: discord.Member, 
 async def create_role(interaction: discord.Interaction, name: str, preset: app_commands.Choice[str] = None, position: app_commands.Choice[str] = None, color: str = None):
     await interaction.response.defer(ephemeral=True)
     
-    # 1. Farbe parsen
     role_color = discord.Color.default()
     if color:
-        try:
-            role_color = discord.Color(int(color.replace("#", ""), 16))
-        except:
-            return await interaction.followup.send("❌ Ungültige Farbe! Bitte als Hex-Code (z.B. `FF0000` für Rot).", ephemeral=True)
+        try: role_color = discord.Color(int(color.replace("#", ""), 16))
+        except: return await interaction.followup.send("❌ Ungültige Farbe! Bitte als Hex-Code (z.B. `FF0000` für Rot).", ephemeral=True)
     
-    # 2. Rolle erstellen (ganz unten standardmäßig)
-    try:
-        new_role = await interaction.guild.create_role(name=name, color=role_color, reason=f"Erstellt von {interaction.user}")
-    except Exception as e:
-        return await interaction.followup.send(f"❌ Fehler beim Erstellen: {e}", ephemeral=True)
+    try: new_role = await interaction.guild.create_role(name=name, color=role_color, reason=f"Erstellt von {interaction.user}")
+    except Exception as e: return await interaction.followup.send(f"❌ Fehler beim Erstellen: {e}", ephemeral=True)
         
-    # 3. Preset anwenden
     permissions = discord.Permissions.none()
     preset_val = preset.value if preset else "member"
     
     if preset_val == "admin":
         permissions.administrator = True
     elif preset_val == "moderator":
-        permissions.view_channel = True
-        permissions.send_messages = True
-        permissions.read_message_history = True
-        permissions.manage_messages = True
-        permissions.kick_members = True
-        permissions.moderate_members = True
-        permissions.manage_channels = True
-        permissions.view_audit_log = True
+        permissions.view_channel = True; permissions.send_messages = True; permissions.read_message_history = True
+        permissions.manage_messages = True; permissions.kick_members = True; permissions.moderate_members = True
+        permissions.manage_channels = True; permissions.view_audit_log = True
     elif preset_val == "member":
-        permissions.view_channel = True
-        permissions.send_messages = True
-        permissions.read_message_history = True
-        permissions.connect = True
-        permissions.speak = True
+        permissions.view_channel = True; permissions.send_messages = True; permissions.read_message_history = True
+        permissions.connect = True; permissions.speak = True
     elif preset_val == "muted":
-        permissions.view_channel = True
-        permissions.read_message_history = True
-        permissions.send_messages = False
-        permissions.add_reactions = False
-        permissions.connect = False
-        permissions.speak = False
+        permissions.view_channel = True; permissions.read_message_history = True
+        permissions.send_messages = False; permissions.add_reactions = False; permissions.connect = False; permissions.speak = False
             
-    try:
-        await new_role.edit(permissions=permissions)
-    except Exception:
-        pass
+    try: await new_role.edit(permissions=permissions)
+    except: pass
             
-    # 4. Hierarchie anpassen
     pos_val = position.value if position else "bottom"
     try:
         bot_member = interaction.guild.me
         bot_highest_pos = bot_member.top_role.position
-        
-        if pos_val == "top":
-            await new_role.edit(position=bot_highest_pos - 1)
-        elif pos_val == "middle":
-            await new_role.edit(position=max(1, bot_highest_pos // 2))
-    except Exception:
-        pass
+        if pos_val == "top": await new_role.edit(position=bot_highest_pos - 1)
+        elif pos_val == "middle": await new_role.edit(position=max(1, bot_highest_pos // 2))
+    except: pass
             
     await interaction.followup.send(f"✅ Rolle `{name}` wurde erstellt.\n**Preset:** {preset_val}\n**Position:** {pos_val}", ephemeral=True)
 
@@ -707,7 +752,7 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
 @bot.tree.command(name="dashboard", description="Übersicht über alle Befehle")
 async def dashboard(interaction: discord.Interaction):
     embed = discord.Embed(title="🛠️ Server Dashboard", description="Übersicht aller Slash-Features", color=discord.Color.blue())
-    embed.add_field(name="Moderation (Nur Admins)", value="/ban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
+    embed.add_field(name="Moderation (Nur Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Rollen (Nur Admins)", value="/role add, /role remove, /create-role", inline=False)
     embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Automatisch aktiv)", inline=False)
     embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
