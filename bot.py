@@ -37,7 +37,7 @@ def clean_embed(title=None, description=None):
     return discord.Embed(title=title, description=description, color=discord.Color.from_str("#2B2D31"))
 
 # ==========================================
-# --- OWNER WHITELIST (FÜR ADMIN CMDS) ---
+# --- OWNER WHITELIST ---
 # ==========================================
 OWNER_IDS = [1216316535006691348, 1304449108177588286]
 
@@ -290,39 +290,93 @@ async def on_message(message):
     global db_dirty
     if message.author.bot or not message.guild: return
 
-    if "discord.gg" in message.content or "http://" in message.content:
-        if message.author.id not in OWNER_IDS:
-            try:
-                await message.delete()
-                embed = clean_embed(description=f"{message.author.mention}, no links are allowed!")
-                await message.channel.send(embed=embed, delete_after=3)
-            except: pass
-
-    user_msgs = bot.spam_cache.setdefault(message.author.id, [])
-    user_msgs.append(datetime.now())
-    if len([t for t in user_msgs if t > datetime.now() - timedelta(seconds=5)]) > 5:
-        try:
-            await message.author.timeout(timedelta(minutes=1), reason="Spam")
-            embed = clean_embed(description=f"{message.author.mention} has been muted for spamming.")
-            await message.channel.send(embed=embed, delete_after=5)
-        except: pass
-
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
+    
     if guild_id not in data: data[guild_id] = {}
-    if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
+    if "automod_settings" not in data[guild_id]: 
+        data[guild_id]["automod_settings"] = {"anti_link": True, "anti_spam": True}
     
-    user_data = data[guild_id][user_id]
-    user_data["xp"] += random.randint(5, 15)
-    user_data["balance"] += 1
+    settings = data[guild_id]["automod_settings"]
+
+    # --- AUTO MODERATION ---
+    # Anti-Link
+    if settings.get("anti_link", True):
+        if "discord.gg" in message.content or "http://" in message.content or "https://" in message.content:
+            if message.author.id not in OWNER_IDS:
+                try:
+                    await message.delete()
+                    embed = clean_embed(description=f"{message.author.mention}, links are not allowed here.")
+                    await message.channel.send(embed=embed, delete_after=3)
+                except: pass
+
+    # Anti-Spam
+    if settings.get("anti_spam", True):
+        user_msgs = bot.spam_cache.setdefault(message.author.id, [])
+        user_msgs.append(datetime.now())
+        if len([t for t in user_msgs if t > datetime.now() - timedelta(seconds=5)]) > 5:
+            try:
+                await message.author.timeout(timedelta(minutes=1), reason="Spam")
+                embed = clean_embed(description=f"{message.author.mention} has been muted for spamming.")
+                await message.channel.send(embed=embed, delete_after=5)
+            except: pass
+
+    # --- LEVELING & ECONOMY ---
+    if "automod_settings" != user_id: # Verhindert, dass die Settings als User gespeichert werden
+        if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
+        
+        user_data = data[guild_id][user_id]
+        user_data["xp"] += random.randint(5, 15)
+        user_data["balance"] += 1
+        
+        xp_needed = user_data["level"] * 100
+        if user_data["xp"] >= xp_needed:
+            user_data["level"] += 1
+            user_data["xp"] -= xp_needed
+            embed = clean_embed(description=f"{message.author.mention} has reached Level {user_data['level']}!")
+            await message.channel.send(embed=embed)
+        db_dirty = True
+
+# ==========================================
+# --- AUTOMOD CONFIGURATION (NUR OWNER) ---
+# ==========================================
+automod_group = app_commands.Group(name="automod", description="Configure AutoMod settings")
+
+@automod_group.command(name="status", description="View current AutoMod settings")
+@owner_only()
+async def automod_status(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
+    settings = data.get(guild_id, {}).get("automod_settings", {"anti_link": True, "anti_spam": True})
     
-    xp_needed = user_data["level"] * 100
-    if user_data["xp"] >= xp_needed:
-        user_data["level"] += 1
-        user_data["xp"] -= xp_needed
-        embed = clean_embed(description=f"{message.author.mention} has reached Level {user_data['level']}!")
-        await message.channel.send(embed=embed)
+    embed = clean_embed(title="AutoMod Status")
+    embed.add_field(name="Anti-Link", value="Enabled" if settings.get("anti_link", True) else "Disabled", inline=True)
+    embed.add_field(name="Anti-Spam", value="Enabled" if settings.get("anti_spam", True) else "Disabled", inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@automod_group.command(name="toggle", description="Turn AutoMod features on or off")
+@owner_only()
+@app_commands.choices(feature=[
+    app_commands.Choice(name="Anti-Link", value="anti_link"),
+    app_commands.Choice(name="Anti-Spam", value="anti_spam")
+])
+@app_commands.choices(state=[
+    app_commands.Choice(name="On", value="true"),
+    app_commands.Choice(name="Off", value="false")
+])
+async def automod_toggle(interaction: discord.Interaction, feature: app_commands.Choice[str], state: app_commands.Choice[str]):
+    global db_dirty
+    guild_id = str(interaction.guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    if "automod_settings" not in data[guild_id]: 
+        data[guild_id]["automod_settings"] = {"anti_link": True, "anti_spam": True}
+        
+    data[guild_id]["automod_settings"][feature.value] = (state.value == "true")
     db_dirty = True
+    
+    embed = clean_embed(title="AutoMod Updated")
+    embed.add_field(name="Feature", value=feature.name, inline=True)
+    embed.add_field(name="New State", value=state.name, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
 # --- ADMIN MODERATION (NUR OWNER) ---
@@ -679,7 +733,10 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
 @bot.tree.command(name="leaderboard", description="Top 5 server members")
 async def leaderboard(interaction: discord.Interaction):
     guild_data = data.get(str(interaction.guild.id), {})
-    sorted_users = sorted(guild_data.items(), key=lambda x: x[1].get("level", 0), reverse=True)[:5]
+    # Filter out non-user keys (like 'automod_settings') before sorting
+    user_items = [(k, v) for k, v in guild_data.items() if k.isdigit()]
+    sorted_users = sorted(user_items, key=lambda x: x[1].get("level", 0), reverse=True)[:5]
+    
     embed = clean_embed(title="Leaderboard")
     if not sorted_users:
         embed.description = "No data available yet."
@@ -831,9 +888,9 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
 @bot.tree.command(name="dashboard", description="Overview of all commands")
 async def dashboard(interaction: discord.Interaction):
     embed = clean_embed(title="Server Dashboard", description="Overview of all slash commands")
+    embed.add_field(name="AutoMod (Admins)", value="/automod status, /automod toggle", inline=False)
     embed.add_field(name="Moderation (Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Roles (Admins)", value="/role add, /role remove, /create-role", inline=False)
-    embed.add_field(name="AutoMod", value="Anti-Spam, Anti-Link (Active automatically)", inline=False)
     embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
@@ -865,6 +922,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # --- BOT START ---
 # ==========================================
 bot.tree.add_command(role_group)
+bot.tree.add_command(automod_group)
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
