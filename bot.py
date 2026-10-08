@@ -33,7 +33,7 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 # --- HELPER: CLEAN EMBED ---
 # ==========================================
 def clean_embed(title=None, description=None):
-    """Erstellt ein Embed, das sich nahtlos in den dunklen Discord Hintergrund einfügt."""
+    """Creates an embed that blends seamlessly into the dark Discord background."""
     return discord.Embed(title=title, description=description, color=discord.Color.from_str("#2B2D31"))
 
 # ==========================================
@@ -300,7 +300,6 @@ async def on_message(message):
     settings = data[guild_id]["automod_settings"]
 
     # --- AUTO MODERATION ---
-    # Anti-Link
     if settings.get("anti_link", True):
         if "discord.gg" in message.content or "http://" in message.content or "https://" in message.content:
             if message.author.id not in OWNER_IDS:
@@ -310,7 +309,6 @@ async def on_message(message):
                     await message.channel.send(embed=embed, delete_after=3)
                 except: pass
 
-    # Anti-Spam
     if settings.get("anti_spam", True):
         user_msgs = bot.spam_cache.setdefault(message.author.id, [])
         user_msgs.append(datetime.now())
@@ -322,7 +320,7 @@ async def on_message(message):
             except: pass
 
     # --- LEVELING & ECONOMY ---
-    if "automod_settings" != user_id: # Verhindert, dass die Settings als User gespeichert werden
+    if "automod_settings" != user_id:
         if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
         
         user_data = data[guild_id][user_id]
@@ -515,6 +513,36 @@ async def setnick(interaction: discord.Interaction, member: discord.Member, nick
     except:
         embed = clean_embed(description="Missing permissions to change this nickname.")
         await interaction.followup.send(embed=embed)
+
+# ==========================================
+# --- ADMIN ABUSE REPORT (FÜR ALLE) ---
+# ==========================================
+@bot.tree.command(name="adminabuse", description="Report an admin for abuse")
+async def adminabuse(interaction: discord.Interaction, member: discord.Member, reason: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    guild = interaction.guild
+    reports_channel = discord.utils.get(guild.text_channels, name="admin-reports")
+    
+    if not reports_channel:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(view_channel=True)
+        }
+        for role in guild.roles:
+            if role.permissions.manage_guild or role.permissions.administrator:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True)
+        reports_channel = await guild.create_text_channel("admin-reports", overwrites=overwrites)
+        
+    embed = clean_embed(title="Admin Abuse Report")
+    embed.add_field(name="Reported Admin", value=f"{member.mention} ({member.name})", inline=False)
+    embed.add_field(name="Reported by", value=interaction.user.mention, inline=False)
+    embed.add_field(name="Reason", value=reason, inline=False)
+    
+    await reports_channel.send(embed=embed)
+    
+    confirm_embed = clean_embed(description="Your report has been submitted to the administration team. They will review it shortly.")
+    await interaction.followup.send(embed=confirm_embed, ephemeral=True)
 
 # ==========================================
 # --- ROLLEN VERWALTUNG (NUR OWNER) ---
@@ -733,7 +761,6 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
 @bot.tree.command(name="leaderboard", description="Top 5 server members")
 async def leaderboard(interaction: discord.Interaction):
     guild_data = data.get(str(interaction.guild.id), {})
-    # Filter out non-user keys (like 'automod_settings') before sorting
     user_items = [(k, v) for k, v in guild_data.items() if k.isdigit()]
     sorted_users = sorted(user_items, key=lambda x: x[1].get("level", 0), reverse=True)[:5]
     
@@ -891,6 +918,7 @@ async def dashboard(interaction: discord.Interaction):
     embed.add_field(name="AutoMod (Admins)", value="/automod status, /automod toggle", inline=False)
     embed.add_field(name="Moderation (Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Roles (Admins)", value="/role add, /role remove, /create-role", inline=False)
+    embed.add_field(name="Reporting", value="/adminabuse", inline=False)
     embed.add_field(name="Music", value="/play, /skip, /stop", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
