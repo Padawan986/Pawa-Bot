@@ -13,6 +13,7 @@ import io
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from aiohttp import web
+from gtts import gTTS
 
 # --- .env DATEI LADEN ---
 load_dotenv()
@@ -46,6 +47,13 @@ def owner_only():
             raise app_commands.CheckFailure()
         return True
     return app_commands.check(predicate)
+
+async def check_dj(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
+    if data.get(guild_id, {}).get("dj_mode", False):
+        if interaction.user.id not in OWNER_IDS and not interaction.user.guild_permissions.administrator:
+            return False
+    return True
 
 # ==========================================
 # --- MULTI-SERVER JSON DATENBANK & GITHUB ---
@@ -161,16 +169,14 @@ def check_queue(guild_id, channel):
         guild = bot.get_guild(guild_id)
         if guild and guild.voice_client:
             guild.voice_client.play(next_source, after=lambda e: check_queue(guild_id, channel))
-            
             if guild_id not in music_history: music_history[guild_id] = []
             music_history[guild_id].append(next_source.title)
             if len(music_history[guild_id]) > 5: music_history[guild_id].pop(0)
-            
             embed = clean_embed(description=f"Now playing: **{next_source.title}**")
             asyncio.run_coroutine_threadsafe(channel.send(embed=embed), bot.loop)
 
 # ==========================================
-# --- KEEP ALIVE WEB SERVER (FÜR RENDER) ---
+# --- KEEP ALIVE WEB SERVER ---
 # ==========================================
 async def handle(request):
     return web.Response(text="Bot is online!")
@@ -220,7 +226,6 @@ class AppealModal(discord.ui.Modal, title='Submit Appeal'):
         
         view = AppealDecisionView(self.user_id, self.action_type)
         await appeals_channel.send(embed=embed, view=view)
-        
         resp_embed = clean_embed(description="Your appeal has been submitted successfully. The team will review it shortly.")
         await interaction.response.send_message(embed=resp_embed, ephemeral=True)
 
@@ -261,7 +266,6 @@ class AppealDecisionView(discord.ui.View):
             invite = await channel.create_invite(max_uses=1, unique=True)
             try: await user.send(f"Your appeal has been accepted! You can rejoin here: {invite.url}")
             except: pass
-            
             embed = clean_embed(description=f"Appeal accepted by {interaction.user.mention}. User has been notified.")
             await interaction.response.edit_message(embed=embed, view=None)
         except Exception as e:
@@ -273,56 +277,40 @@ class AppealDecisionView(discord.ui.View):
         user = await bot.fetch_user(self.user_id)
         try: await user.send("Your appeal has been rejected. The punishment remains in place.")
         except: pass
-        
         embed = clean_embed(description=f"Appeal rejected by {interaction.user.mention}. User has been notified.")
         await interaction.response.edit_message(embed=embed, view=None)
 
 # ==========================================
-# --- SNAKE GAME (FUN COMMAND) ---
+# --- SNAKE GAME ---
 # ==========================================
 class SnakeGame:
     def __init__(self):
-        self.width = 5
-        self.height = 5
-        self.snake = [(2, 2)]
-        self.direction = (1, 0)
-        self.food = self.spawn_food()
-        self.game_over = False
+        self.width = 5; self.height = 5; self.snake = [(2, 2)]; self.direction = (1, 0)
+        self.food = self.spawn_food(); self.game_over = False
 
     def spawn_food(self):
         while True:
             pos = (random.randint(0, self.width-1), random.randint(0, self.height-1))
-            if pos not in self.snake:
-                return pos
+            if pos not in self.snake: return pos
 
     def move(self, direction):
         if self.game_over: return
         self.direction = direction
         head = self.snake[0]
         new_head = (head[0] + direction[0], head[1] + direction[1])
-        
-        if (new_head in self.snake or 
-            new_head[0] < 0 or new_head[0] >= self.width or
-            new_head[1] < 0 or new_head[1] >= self.height):
-            self.game_over = True
-            return
-        
+        if (new_head in self.snake or new_head[0] < 0 or new_head[0] >= self.width or new_head[1] < 0 or new_head[1] >= self.height):
+            self.game_over = True; return
         self.snake.insert(0, new_head)
-        if new_head == self.food:
-            self.food = self.spawn_food()
-        else:
-            self.snake.pop()
+        if new_head == self.food: self.food = self.spawn_food()
+        else: self.snake.pop()
 
     def render_board(self):
         board = "```\n"
         for y in range(self.height):
             for x in range(self.width):
-                if (x, y) in self.snake:
-                    board += "X"
-                elif (x, y) == self.food:
-                    board += "O"
-                else:
-                    board += "."
+                if (x, y) in self.snake: board += "X"
+                elif (x, y) == self.food: board += "O"
+                else: board += "."
             board += "\n"
         board += "```"
         return board
@@ -336,33 +324,20 @@ class SnakeView(discord.ui.View):
     async def update_game(self, interaction):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message("This is not your game!", ephemeral=True)
-        
         embed = clean_embed(title="Snake Game", description=self.game.render_board())
         if self.game.game_over:
             embed.add_field(name="Game Over", value=f"Final Score: {len(self.game.snake) - 1}")
-            for child in self.children:
-                child.disabled = True
+            for child in self.children: child.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Up", style=discord.ButtonStyle.primary, row=0)
-    async def up(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.game.move((0, -1))
-        await self.update_game(interaction)
-
+    async def up(self, interaction: discord.Interaction, button: discord.ui.Button): self.game.move((0, -1)); await self.update_game(interaction)
     @discord.ui.button(label="Down", style=discord.ButtonStyle.primary, row=0)
-    async def down(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.game.move((0, 1))
-        await self.update_game(interaction)
-
+    async def down(self, interaction: discord.Interaction, button: discord.ui.Button): self.game.move((0, 1)); await self.update_game(interaction)
     @discord.ui.button(label="Left", style=discord.ButtonStyle.primary, row=1)
-    async def left(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.game.move((-1, 0))
-        await self.update_game(interaction)
-
+    async def left(self, interaction: discord.Interaction, button: discord.ui.Button): self.game.move((-1, 0)); await self.update_game(interaction)
     @discord.ui.button(label="Right", style=discord.ButtonStyle.primary, row=1)
-    async def right(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.game.move((1, 0))
-        await self.update_game(interaction)
+    async def right(self, interaction: discord.Interaction, button: discord.ui.Button): self.game.move((1, 0)); await self.update_game(interaction)
 
 # ==========================================
 # --- EVENTS ---
@@ -413,13 +388,11 @@ async def on_message(message):
                 await message.channel.send(embed=embed, delete_after=5)
             except: pass
 
-    if "automod_settings" != user_id:
+    if "automod_settings" != user_id and "dj_mode" != user_id:
         if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
-        
         user_data = data[guild_id][user_id]
         user_data["xp"] += random.randint(5, 15)
         user_data["balance"] += 1
-        
         xp_needed = user_data["level"] * 100
         if user_data["xp"] >= xp_needed:
             user_data["level"] += 1
@@ -429,7 +402,7 @@ async def on_message(message):
         db_dirty = True
 
 # ==========================================
-# --- AUTOMOD CONFIGURATION (NUR OWNER) ---
+# --- AUTOMOD & ADMIN CONFIGURATION ---
 # ==========================================
 automod_group = app_commands.Group(name="automod", description="Configure AutoMod settings")
 
@@ -438,7 +411,6 @@ automod_group = app_commands.Group(name="automod", description="Configure AutoMo
 async def automod_status(interaction: discord.Interaction):
     guild_id = str(interaction.guild.id)
     settings = data.get(guild_id, {}).get("automod_settings", {"anti_link": True, "anti_spam": True})
-    
     embed = clean_embed(title="AutoMod Status")
     embed.add_field(name="Anti-Link", value="Enabled" if settings.get("anti_link", True) else "Disabled", inline=True)
     embed.add_field(name="Anti-Spam", value="Enabled" if settings.get("anti_spam", True) else "Disabled", inline=True)
@@ -446,31 +418,45 @@ async def automod_status(interaction: discord.Interaction):
 
 @automod_group.command(name="toggle", description="Turn AutoMod features on or off")
 @owner_only()
-@app_commands.choices(feature=[
-    app_commands.Choice(name="Anti-Link", value="anti_link"),
-    app_commands.Choice(name="Anti-Spam", value="anti_spam")
-])
-@app_commands.choices(state=[
-    app_commands.Choice(name="On", value="true"),
-    app_commands.Choice(name="Off", value="false")
-])
+@app_commands.choices(feature=[app_commands.Choice(name="Anti-Link", value="anti_link"), app_commands.Choice(name="Anti-Spam", value="anti_spam")])
+@app_commands.choices(state=[app_commands.Choice(name="On", value="true"), app_commands.Choice(name="Off", value="false")])
 async def automod_toggle(interaction: discord.Interaction, feature: app_commands.Choice[str], state: app_commands.Choice[str]):
     global db_dirty
     guild_id = str(interaction.guild.id)
     if guild_id not in data: data[guild_id] = {}
-    if "automod_settings" not in data[guild_id]: 
-        data[guild_id]["automod_settings"] = {"anti_link": True, "anti_spam": True}
-        
+    if "automod_settings" not in data[guild_id]: data[guild_id]["automod_settings"] = {"anti_link": True, "anti_spam": True}
     data[guild_id]["automod_settings"][feature.value] = (state.value == "true")
     db_dirty = True
-    
     embed = clean_embed(title="AutoMod Updated")
     embed.add_field(name="Feature", value=feature.name, inline=True)
     embed.add_field(name="New State", value=state.name, inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="djmode", description="Toggle DJ mode (restricts music to admins)")
+@owner_only()
+async def djmode(interaction: discord.Interaction):
+    global db_dirty
+    guild_id = str(interaction.guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    data[guild_id]["dj_mode"] = not data[guild_id].get("dj_mode", False)
+    db_dirty = True
+    state = "Enabled" if data[guild_id]["dj_mode"] else "Disabled"
+    embed = clean_embed(title="DJ Mode Updated", description=f"DJ mode is now {state}.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="admin", description="View bot settings for this server")
+@owner_only()
+async def admin(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
+    settings = data.get(guild_id, {})
+    embed = clean_embed(title=f"Admin Settings for {interaction.guild.name}")
+    embed.add_field(name="DJ Mode", value="Enabled" if settings.get("dj_mode", False) else "Disabled", inline=True)
+    embed.add_field(name="Anti-Link", value="Enabled" if settings.get("automod_settings", {}).get("anti_link", True) else "Disabled", inline=True)
+    embed.add_field(name="Anti-Spam", value="Enabled" if settings.get("automod_settings", {}).get("anti_spam", True) else "Disabled", inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 # ==========================================
-# --- ADMIN MODERATION (NUR OWNER) ---
+# --- ADMIN MODERATION ---
 # ==========================================
 @bot.tree.command(name="ban", description="Bans a user")
 @owner_only()
@@ -481,12 +467,9 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     view = DMAppealView(interaction.guild_id, "ban", reason or "No reason", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
-
     try:
-        await member.ban(reason=reason)
-        succ, unsucc = 1, 0
+        await member.ban(reason=reason); succ, unsucc = 1, 0
     except: succ, unsucc = 0, 1
-        
     embed = clean_embed(title="Ban Executed")
     embed.add_field(name="Successful", value=str(succ), inline=True)
     embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
@@ -500,10 +483,8 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str = No
     await interaction.response.defer()
     try:
         user = await bot.fetch_user(int(user_id))
-        await interaction.guild.unban(user, reason=reason)
-        succ, unsucc = 1, 0
+        await interaction.guild.unban(user, reason=reason); succ, unsucc = 1, 0
     except: succ, unsucc = 0, 1
-        
     embed = clean_embed(title="Unban Executed")
     embed.add_field(name="Successful", value=str(succ), inline=True)
     embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
@@ -520,12 +501,9 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     view = DMAppealView(interaction.guild_id, "kick", reason or "No reason", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
-
     try:
-        await member.kick(reason=reason)
-        succ, unsucc = 1, 0
+        await member.kick(reason=reason); succ, unsucc = 1, 0
     except: succ, unsucc = 0, 1
-        
     embed = clean_embed(title="Kick Executed")
     embed.add_field(name="Successful", value=str(succ), inline=True)
     embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
@@ -543,12 +521,9 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, minu
     view = DMAppealView(interaction.guild_id, "timeout", reason or "No reason", member.id)
     try: await member.send(embed=dm_embed, view=view)
     except: pass
-
     try:
-        await member.timeout(timedelta(minutes=minutes), reason=reason)
-        succ, unsucc = 1, 0
+        await member.timeout(timedelta(minutes=minutes), reason=reason); succ, unsucc = 1, 0
     except: succ, unsucc = 0, 1
-        
     embed = clean_embed(title="Timeout Executed")
     embed.add_field(name="Successful", value=str(succ), inline=True)
     embed.add_field(name="Unsuccessful", value=str(unsucc), inline=True)
@@ -570,8 +545,7 @@ async def purge(interaction: discord.Interaction, amount: int):
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     global db_dirty
     await interaction.response.defer()
-    guild_id = str(interaction.guild.id)
-    user_id = str(member.id)
+    guild_id = str(interaction.guild.id); user_id = str(member.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     data[guild_id][user_id]["warns"] += 1
@@ -580,7 +554,6 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         dm_embed = clean_embed(description=f"You have been warned in {interaction.guild.name}. Reason: {reason}")
         await member.send(embed=dm_embed)
     except: pass
-
     embed = clean_embed(title="Warning Issued")
     embed.add_field(name="Successful", value="1", inline=True)
     embed.add_field(name="Unsuccessful", value="0", inline=True)
@@ -595,10 +568,9 @@ async def setnick(interaction: discord.Interaction, member: discord.Member, nick
     try:
         await member.edit(nick=nick)
         embed = clean_embed(description=f"Nickname of {member} has been changed to {nick}.")
-        await interaction.followup.send(embed=embed)
     except:
         embed = clean_embed(description="Missing permissions to change this nickname.")
-        await interaction.followup.send(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="adminabuse", description="Report an admin for abuse")
 async def adminabuse(interaction: discord.Interaction, member: discord.Member, reason: str):
@@ -606,26 +578,21 @@ async def adminabuse(interaction: discord.Interaction, member: discord.Member, r
     guild = interaction.guild
     reports_channel = discord.utils.get(guild.text_channels, name="admin-reports")
     if not reports_channel:
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            guild.me: discord.PermissionOverwrite(view_channel=True)
-        }
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), guild.me: discord.PermissionOverwrite(view_channel=True)}
         for role in guild.roles:
             if role.permissions.manage_guild or role.permissions.administrator:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True)
         reports_channel = await guild.create_text_channel("admin-reports", overwrites=overwrites)
-        
     embed = clean_embed(title="Admin Abuse Report")
     embed.add_field(name="Reported Admin", value=f"{member.mention} ({member.name})", inline=False)
     embed.add_field(name="Reported by", value=interaction.user.mention, inline=False)
     embed.add_field(name="Reason", value=reason, inline=False)
     await reports_channel.send(embed=embed)
-    
     confirm_embed = clean_embed(description="Your report has been submitted to the administration team. They will review it shortly.")
     await interaction.followup.send(embed=confirm_embed, ephemeral=True)
 
 # ==========================================
-# --- ROLLEN VERWALTUNG (NUR OWNER) ---
+# --- ROLLEN VERWALTUNG ---
 # ==========================================
 role_group = app_commands.Group(name="role", description="Manages roles")
 
@@ -636,10 +603,9 @@ async def role_add(interaction: discord.Interaction, member: discord.Member, rol
     try:
         await member.add_roles(role)
         embed = clean_embed(description=f"Added {role.name} to {member.name}.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
     except:
         embed = clean_embed(description="Error (Role higher than bot?)")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @role_group.command(name="remove", description="Removes a role from a user")
 @owner_only()
@@ -648,10 +614,9 @@ async def role_remove(interaction: discord.Interaction, member: discord.Member, 
     try:
         await member.remove_roles(role)
         embed = clean_embed(description=f"Removed {role.name} from {member.name}.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
     except:
         embed = clean_embed(description="Error")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="create-role", description="Creates a role with presets and hierarchy")
 @owner_only()
@@ -674,15 +639,12 @@ async def create_role(interaction: discord.Interaction, name: str, preset: app_c
         except: 
             embed = clean_embed(description="Invalid color! Please use a hex code (e.g., `FF0000` for red).")
             return await interaction.followup.send(embed=embed, ephemeral=True)
-    
     try: new_role = await interaction.guild.create_role(name=name, color=role_color, reason=f"Created by {interaction.user}")
     except Exception as e: 
         embed = clean_embed(description=f"Error creating role: {e}")
         return await interaction.followup.send(embed=embed, ephemeral=True)
-        
     permissions = discord.Permissions.none()
     preset_val = preset.value if preset else "member"
-    
     if preset_val == "admin":
         permissions.administrator = True
     elif preset_val == "moderator":
@@ -695,18 +657,14 @@ async def create_role(interaction: discord.Interaction, name: str, preset: app_c
     elif preset_val == "muted":
         permissions.view_channel = True; permissions.read_message_history = True
         permissions.send_messages = False; permissions.add_reactions = False; permissions.connect = False; permissions.speak = False
-            
     try: await new_role.edit(permissions=permissions)
     except: pass
-            
     pos_val = position.value if position else "bottom"
     try:
-        bot_member = interaction.guild.me
-        bot_highest_pos = bot_member.top_role.position
+        bot_member = interaction.guild.me; bot_highest_pos = bot_member.top_role.position
         if pos_val == "top": await new_role.edit(position=bot_highest_pos - 1)
         elif pos_val == "middle": await new_role.edit(position=max(1, bot_highest_pos // 2))
     except: pass
-            
     embed = clean_embed(title="Role Created")
     embed.add_field(name="Name", value=name, inline=True)
     embed.add_field(name="Preset", value=preset_val, inline=True)
@@ -718,6 +676,9 @@ async def create_role(interaction: discord.Interaction, name: str, preset: app_c
 # ==========================================
 @bot.tree.command(name="play", description="Plays music (YouTube, Spotify, SoundCloud)")
 async def play(interaction: discord.Interaction, query: str):
+    if not await check_dj(interaction):
+        embed = clean_embed(description="DJ mode is enabled. Only admins can control music.")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     if not interaction.user.voice:
         embed = clean_embed(description="You must be in a voice channel!")
         return await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -727,7 +688,6 @@ async def play(interaction: discord.Interaction, query: str):
     elif interaction.guild.voice_client.channel != interaction.user.voice.channel:
         embed = clean_embed(description="I am already in another channel!")
         return await interaction.followup.send(embed=embed)
-
     try:
         result = await YTDLSource.from_url(query, loop=bot.loop)
         if isinstance(result, list):
@@ -738,47 +698,101 @@ async def play(interaction: discord.Interaction, query: str):
             queues.setdefault(interaction.guild.id, []).extend(result)
             if interaction.guild.voice_client.is_playing():
                 embed = clean_embed(description=f"Playlist added: **{len(result)+1} songs** in the queue!")
-                await interaction.followup.send(embed=embed)
             else:
                 interaction.guild.voice_client.play(first_song, after=lambda e: check_queue(interaction.guild.id, interaction.channel))
                 embed = clean_embed(description=f"Now playing: **{first_song.title}**\nAdded {len(result)} more songs to the queue.")
-                await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
             if interaction.guild.voice_client.is_playing():
                 queues.setdefault(interaction.guild.id, []).append(result)
                 embed = clean_embed(description=f"Added to queue: **{result.title}**")
-                await interaction.followup.send(embed=embed)
             else:
                 interaction.guild.voice_client.play(result, after=lambda e: check_queue(interaction.guild.id, interaction.channel))
                 embed = clean_embed(description=f"Now playing: **{result.title}**")
-                await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed)
     except Exception as e:
         embed = clean_embed(description=f"Error playing song: {e}")
         await interaction.followup.send(embed=embed)
 
+@bot.tree.command(name="play-file", description="Plays an attached audio file")
+async def play_file(interaction: discord.Interaction, file: discord.Attachment):
+    if not await check_dj(interaction):
+        embed = clean_embed(description="DJ mode is enabled. Only admins can control music.")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    if not interaction.user.voice:
+        embed = clean_embed(description="You must be in a voice channel!")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer()
+    if interaction.guild.voice_client is None:
+        await interaction.user.voice.channel.connect()
+    elif interaction.guild.voice_client.channel != interaction.user.voice.channel:
+        embed = clean_embed(description="I am already in another channel!")
+        return await interaction.followup.send(embed=embed)
+    try:
+        r = requests.get(file.url)
+        with open(file.filename, "wb") as f:
+            f.write(r.content)
+        audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(file.filename, **ffmpeg_options))
+        if interaction.guild.voice_client.is_playing(): interaction.guild.voice_client.stop()
+        interaction.guild.voice_client.play(audio_source)
+        embed = clean_embed(description=f"Now playing: {file.filename}")
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        embed = clean_embed(description=f"Error: {e}")
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="music-info", description="Searches for song info without playing")
+async def music_info(interaction: discord.Interaction, query: str):
+    await interaction.response.defer()
+    try:
+        loop = bot.loop
+        info = await loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch1:{query}", download=False))
+        if 'entries' in info and info['entries']:
+            entry = info['entries'][0]
+            embed = clean_embed(title=entry.get('title', 'Unknown'))
+            embed.add_field(name="Uploader", value=entry.get('uploader', 'Unknown'), inline=True)
+            embed.add_field(name="Views", value=str(entry.get('view_count', 'Unknown')), inline=True)
+            duration = entry.get('duration', 0)
+            mins, secs = divmod(duration, 60)
+            embed.add_field(name="Duration", value=f"{mins}:{secs:02d}", inline=True)
+            if entry.get('thumbnail'): embed.set_thumbnail(url=entry['thumbnail'])
+            embed.url = entry.get('webpage_url')
+        else:
+            embed = clean_embed(description="No results found.")
+    except Exception as e:
+        embed = clean_embed(description=f"Error: {e}")
+    await interaction.followup.send(embed=embed)
+
 @bot.tree.command(name="skip", description="Skips the current song")
 async def skip(interaction: discord.Interaction):
+    if not await check_dj(interaction):
+        embed = clean_embed(description="DJ mode is enabled. Only admins can control music.")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
         interaction.guild.voice_client.stop()
         embed = clean_embed(description="Song skipped.")
-        await interaction.response.send_message(embed=embed)
     else: 
         embed = clean_embed(description="No music is playing!")
-        await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="stop", description="Stops the music")
 async def stop(interaction: discord.Interaction):
+    if not await check_dj(interaction):
+        embed = clean_embed(description="DJ mode is enabled. Only admins can control music.")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     if interaction.guild.voice_client:
         queues[interaction.guild.id] = []
         await interaction.guild.voice_client.disconnect()
         embed = clean_embed(description="Music stopped. Goodbye!")
-        await interaction.response.send_message(embed=embed)
     else: 
         embed = clean_embed(description="I am not in a voice channel.")
-        await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="volume", description="Sets the music volume (0-100)")
 async def volume(interaction: discord.Interaction, level: int):
+    if not await check_dj(interaction):
+        embed = clean_embed(description="DJ mode is enabled. Only admins can control music.")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     if interaction.guild.voice_client and interaction.guild.voice_client.source:
         if 0 <= level <= 100:
             interaction.guild.voice_client.source.volume = level / 100
@@ -791,6 +805,9 @@ async def volume(interaction: discord.Interaction, level: int):
 
 @bot.tree.command(name="shuffle", description="Shuffles the music queue")
 async def shuffle(interaction: discord.Interaction):
+    if not await check_dj(interaction):
+        embed = clean_embed(description="DJ mode is enabled. Only admins can control music.")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
     if interaction.guild.id in queues and len(queues[interaction.guild.id]) > 0:
         random.shuffle(queues[interaction.guild.id])
         embed = clean_embed(description="Queue has been shuffled.")
@@ -831,8 +848,33 @@ async def history(interaction: discord.Interaction):
         embed = clean_embed(title="Recent Tracks", description=desc)
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="tts", description="Speaks text in voice channel")
+@owner_only()
+async def tts(interaction: discord.Interaction, text: str):
+    if not interaction.user.voice:
+        embed = clean_embed(description="You must be in a voice channel!")
+        return await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.defer()
+    if interaction.guild.voice_client is None:
+        await interaction.user.voice.channel.connect()
+    elif interaction.guild.voice_client.channel != interaction.user.voice.channel:
+        embed = clean_embed(description="I am already in another channel!")
+        return await interaction.followup.send(embed=embed)
+    try:
+        if interaction.guild.voice_client.is_playing(): interaction.guild.voice_client.stop()
+        tts_obj = gTTS(text=text, lang='en')
+        tts_obj.save("tts_audio.mp3")
+        audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio("tts_audio.mp3", **ffmpeg_options))
+        interaction.guild.voice_client.play(audio_source)
+        embed = clean_embed(description="Playing TTS message.")
+        await interaction.followup.send(embed=embed)
+        os.remove("tts_audio.mp3")
+    except Exception as e:
+        embed = clean_embed(description=f"Error: {e}")
+        await interaction.followup.send(embed=embed)
+
 # ==========================================
-# --- ECONOMY (FÜR ALLE) ---
+# --- ECONOMY ---
 # ==========================================
 @bot.tree.command(name="balance", description="Shows your balance")
 async def balance(interaction: discord.Interaction, member: discord.Member = None):
@@ -846,8 +888,7 @@ async def balance(interaction: discord.Interaction, member: discord.Member = Non
 @bot.tree.command(name="daily", description="Claim your daily coins")
 async def daily(interaction: discord.Interaction):
     global db_dirty
-    guild_id = str(interaction.guild.id)
-    user_id = str(interaction.user.id)
+    guild_id = str(interaction.guild.id); user_id = str(interaction.user.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     data[guild_id][user_id]["balance"] += 500
@@ -861,8 +902,7 @@ async def gamble(interaction: discord.Interaction, amount: int):
     if amount <= 0: 
         embed = clean_embed(description="Amount must be greater than 0.")
         return await interaction.response.send_message(embed=embed)
-    guild_id = str(interaction.guild.id)
-    user_id = str(interaction.user.id)
+    guild_id = str(interaction.guild.id); user_id = str(interaction.user.id)
     if guild_id not in data: data[guild_id] = {}
     if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
     if data[guild_id][user_id]["balance"] < amount: 
@@ -871,15 +911,14 @@ async def gamble(interaction: discord.Interaction, amount: int):
     if random.randint(1, 2) == 1:
         data[guild_id][user_id]["balance"] += amount
         embed = clean_embed(description=f"You won {amount*2} coins!")
-        await interaction.response.send_message(embed=embed)
     else:
         data[guild_id][user_id]["balance"] -= amount
         embed = clean_embed(description="You lost everything.")
-        await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed)
     db_dirty = True
 
 # ==========================================
-# --- LEVELING & STATS (FÜR ALLE) ---
+# --- LEVELING & STATS ---
 # ==========================================
 @bot.tree.command(name="rank", description="Shows your level")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
@@ -896,7 +935,6 @@ async def leaderboard(interaction: discord.Interaction):
     guild_data = data.get(str(interaction.guild.id), {})
     user_items = [(k, v) for k, v in guild_data.items() if k.isdigit()]
     sorted_users = sorted(user_items, key=lambda x: x[1].get("level", 0), reverse=True)[:5]
-    
     embed = clean_embed(title="Leaderboard")
     if not sorted_users:
         embed.description = "No data available yet."
@@ -934,7 +972,7 @@ async def invites(interaction: discord.Interaction, member: discord.Member = Non
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- IMAGE MANIPULATION (FÜR ALLE) ---
+# --- IMAGE MANIPULATION ---
 # ==========================================
 @bot.tree.command(name="image", description="Manipulate a profile picture")
 @app_commands.choices(effect=[
@@ -956,16 +994,13 @@ async def image(interaction: discord.Interaction, member: discord.Member = None,
             img = Image.merge('RGBA', inverted.split()+(a,))
         else: img = ImageOps.invert(img)
     elif effect_val == "greyscale": img = img.convert('L')
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    
+    buf = io.BytesIO(); img.save(buf, format='PNG'); buf.seek(0)
     embed = clean_embed()
     embed.set_image(url="attachment://manipulated.png")
     await interaction.followup.send(embed=embed, file=discord.File(buf, filename='manipulated.png'))
 
 # ==========================================
-# --- FUN & UTILITY (FÜR ALLE) ---
+# --- FUN & UTILITY ---
 # ==========================================
 @bot.tree.command(name="meme", description="Shows a random meme")
 async def meme(interaction: discord.Interaction):
@@ -990,10 +1025,9 @@ async def weather(interaction: discord.Interaction, city: str):
     try:
         r = requests.get(f"https://wttr.in/{city}?format=%l:+%c+%t+%w&lang=en&m")
         embed = clean_embed(title=f"Weather for {city}", description=r.text)
-        await interaction.response.send_message(embed=embed)
     except: 
         embed = clean_embed(description="Could not fetch weather data.")
-        await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="avatar", description="Shows a user's avatar")
 async def avatar(interaction: discord.Interaction, member: discord.Member = None):
@@ -1039,13 +1073,12 @@ async def ticket(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=TicketView())
 
 # ==========================================
-# --- GIVEAWAYS (NUR OWNER) ---
+# --- GIVEAWAYS ---
 # ==========================================
 class GiveawayView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.participants = []
-
     @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.primary, custom_id="enter_giveaway")
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in self.participants:
@@ -1062,22 +1095,31 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
     embed = clean_embed(title="Giveaway", description=f"Prize: **{prize}**\nEnds in {minutes} minutes.\nClick the button to enter!")
     await interaction.followup.send(embed=embed, view=view)
     msg = await interaction.original_response()
-    
     await asyncio.sleep(minutes * 60)
     msg = await interaction.channel.fetch_message(msg.id)
-    
     if view.participants:
         winner_id = random.choice(view.participants)
         winner = await bot.fetch_user(winner_id)
         win_embed = clean_embed(title="Giveaway Ended", description=f"Winner: {winner.mention}\nPrize: **{prize}**")
-        await interaction.channel.send(embed=win_embed)
     else:
         no_win_embed = clean_embed(title="Giveaway Ended", description="No one entered the giveaway.")
-        await interaction.channel.send(embed=no_win_embed)
+    await interaction.channel.send(embed=win_embed if view.participants else no_win_embed)
 
 # ==========================================
-# --- DASHBOARD & HELP (FÜR ALLE) ---
+# --- HELP & DASHBOARD ---
 # ==========================================
+@bot.tree.command(name="help", description="Shows the detailed help menu")
+async def help(interaction: discord.Interaction):
+    embed = clean_embed(title="Help Menu", description="Use /dashboard for a quick overview. Here are detailed categories:")
+    embed.add_field(name="Music", value="/play, /play-file, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history, /music-info, /tts", inline=False)
+    embed.add_field(name="Admin", value="/admin, /djmode, /automod toggle, /ticket", inline=False)
+    embed.add_field(name="Moderation", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
+    embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
+    embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
+    embed.add_field(name="Utility", value="/ping, /stats, /invites, /weather, /avatar", inline=False)
+    embed.add_field(name="Fun & Games", value="/image, /meme, /hug, /snake", inline=False)
+    await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="dashboard", description="Overview of all commands")
 async def dashboard(interaction: discord.Interaction):
     embed = clean_embed(title="Server Dashboard", description="Overview of all slash commands")
@@ -1085,7 +1127,7 @@ async def dashboard(interaction: discord.Interaction):
     embed.add_field(name="Moderation (Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Roles (Admins)", value="/role add, /role remove, /create-role", inline=False)
     embed.add_field(name="Reporting", value="/adminabuse", inline=False)
-    embed.add_field(name="Music", value="/play, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history", inline=False)
+    embed.add_field(name="Music", value="/play, /play-file, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history, /music-info, /tts", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
     embed.add_field(name="Utility", value="/ping, /stats, /invites, /weather, /avatar", inline=False)
@@ -1094,7 +1136,7 @@ async def dashboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 # ==========================================
-# --- ERROR HANDLER (STILL FÜR OWNER CHECK) ---
+# --- ERROR HANDLER ---
 # ==========================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
