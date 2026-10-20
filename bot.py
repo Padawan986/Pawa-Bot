@@ -356,6 +356,43 @@ async def on_ready():
     bot.loop.create_task(start_webserver())
 
 @bot.event
+async def on_member_join(member):
+    global db_dirty
+    guild_id = str(member.guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    
+    # Join/Leave Tracking
+    jl_settings = data[guild_id].get("joinleave_settings", {"enabled": False, "channel_id": None})
+    if jl_settings.get("enabled") and jl_settings.get("channel_id"):
+        channel = member.guild.get_channel(int(jl_settings["channel_id"]))
+        if channel:
+            embed = clean_embed(title="Member Joined")
+            embed.add_field(name="User", value=f"{member.mention} ({member.name})", inline=False)
+            embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d"), inline=True)
+            embed.add_field(name="Member Count", value=str(member.guild.member_count), inline=True)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            try: await channel.send(embed=embed)
+            except: pass
+
+@bot.event
+async def on_member_remove(member):
+    global db_dirty
+    guild_id = str(member.guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    
+    # Join/Leave Tracking
+    jl_settings = data[guild_id].get("joinleave_settings", {"enabled": False, "channel_id": None})
+    if jl_settings.get("enabled") and jl_settings.get("channel_id"):
+        channel = member.guild.get_channel(int(jl_settings["channel_id"]))
+        if channel:
+            embed = clean_embed(title="Member Left")
+            embed.add_field(name="User", value=f"{member.name} ({member.id})", inline=False)
+            embed.add_field(name="Member Count", value=str(member.guild.member_count), inline=True)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            try: await channel.send(embed=embed)
+            except: pass
+
+@bot.event
 async def on_message(message):
     global db_dirty
     if message.author.bot or not message.guild: return
@@ -388,7 +425,7 @@ async def on_message(message):
                 await message.channel.send(embed=embed, delete_after=5)
             except: pass
 
-    if "automod_settings" != user_id and "dj_mode" != user_id:
+    if "automod_settings" != user_id and "dj_mode" != user_id and "joinleave_settings" != user_id:
         if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
         user_data = data[guild_id][user_id]
         user_data["xp"] += random.randint(5, 15)
@@ -400,6 +437,56 @@ async def on_message(message):
             embed = clean_embed(description=f"{message.author.mention} has reached Level {user_data['level']}!")
             await message.channel.send(embed=embed)
         db_dirty = True
+
+# ==========================================
+# --- JOIN/LEAVE CONFIGURATION ---
+# ==========================================
+joinleave_group = app_commands.Group(name="joinleave", description="Configure join/leave tracking")
+
+@joinleave_group.command(name="set-channel", description="Sets the channel for join/leave messages")
+@owner_only()
+async def jl_set_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    global db_dirty
+    guild_id = str(interaction.guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    if "joinleave_settings" not in data[guild_id]:
+        data[guild_id]["joinleave_settings"] = {"enabled": False, "channel_id": None}
+    data[guild_id]["joinleave_settings"]["channel_id"] = str(channel.id)
+    db_dirty = True
+    embed = clean_embed(title="Join/Leave Updated", description=f"Channel set to {channel.mention}")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@joinleave_group.command(name="toggle", description="Turn join/leave tracking on or off")
+@owner_only()
+@app_commands.choices(state=[
+    app_commands.Choice(name="On", value="true"),
+    app_commands.Choice(name="Off", value="false")
+])
+async def jl_toggle(interaction: discord.Interaction, state: app_commands.Choice[str]):
+    global db_dirty
+    guild_id = str(interaction.guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    if "joinleave_settings" not in data[guild_id]:
+        data[guild_id]["joinleave_settings"] = {"enabled": False, "channel_id": None}
+    data[guild_id]["joinleave_settings"]["enabled"] = (state.value == "true")
+    db_dirty = True
+    embed = clean_embed(title="Join/Leave Updated")
+    embed.add_field(name="Tracking", value=state.name, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@joinleave_group.command(name="status", description="View current join/leave settings")
+@owner_only()
+async def jl_status(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
+    settings = data.get(guild_id, {}).get("joinleave_settings", {"enabled": False, "channel_id": None})
+    embed = clean_embed(title="Join/Leave Status")
+    embed.add_field(name="Enabled", value="Yes" if settings.get("enabled") else "No", inline=True)
+    channel_mention = "Not set"
+    if settings.get("channel_id"):
+        ch = interaction.guild.get_channel(int(settings["channel_id"]))
+        if ch: channel_mention = ch.mention
+    embed.add_field(name="Channel", value=channel_mention, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
 # --- AUTOMOD & ADMIN CONFIGURATION ---
@@ -453,6 +540,8 @@ async def admin(interaction: discord.Interaction):
     embed.add_field(name="DJ Mode", value="Enabled" if settings.get("dj_mode", False) else "Disabled", inline=True)
     embed.add_field(name="Anti-Link", value="Enabled" if settings.get("automod_settings", {}).get("anti_link", True) else "Disabled", inline=True)
     embed.add_field(name="Anti-Spam", value="Enabled" if settings.get("automod_settings", {}).get("anti_spam", True) else "Disabled", inline=True)
+    jl_settings = settings.get("joinleave_settings", {"enabled": False, "channel_id": None})
+    embed.add_field(name="Join/Leave", value="Enabled" if jl_settings.get("enabled") else "Disabled", inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
@@ -1112,7 +1201,7 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
 async def help(interaction: discord.Interaction):
     embed = clean_embed(title="Help Menu", description="Use /dashboard for a quick overview. Here are detailed categories:")
     embed.add_field(name="Music", value="/play, /play-file, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history, /music-info, /tts", inline=False)
-    embed.add_field(name="Admin", value="/admin, /djmode, /automod toggle, /ticket", inline=False)
+    embed.add_field(name="Admin", value="/admin, /djmode, /automod toggle, /joinleave set-channel, /joinleave toggle, /ticket", inline=False)
     embed.add_field(name="Moderation", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
@@ -1124,6 +1213,7 @@ async def help(interaction: discord.Interaction):
 async def dashboard(interaction: discord.Interaction):
     embed = clean_embed(title="Server Dashboard", description="Overview of all slash commands")
     embed.add_field(name="AutoMod (Admins)", value="/automod status, /automod toggle", inline=False)
+    embed.add_field(name="Join/Leave (Admins)", value="/joinleave set-channel, /joinleave toggle, /joinleave status", inline=False)
     embed.add_field(name="Moderation (Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Roles (Admins)", value="/role add, /role remove, /create-role", inline=False)
     embed.add_field(name="Reporting", value="/adminabuse", inline=False)
@@ -1160,6 +1250,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 # ==========================================
 bot.tree.add_command(role_group)
 bot.tree.add_command(automod_group)
+bot.tree.add_command(joinleave_group)
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
