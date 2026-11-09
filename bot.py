@@ -56,6 +56,86 @@ async def check_dj(interaction: discord.Interaction):
     return True
 
 # ==========================================
+# --- LIVE FORWARDING & VOICE STATUS ---
+# ==========================================
+SOURCE_GUILD_ID = 1528072027359936666
+TARGET_GUILD_ID = 1400460024144466032
+
+async def get_or_create_forward_channel(target_guild):
+    """Findet oder erstellt den Channel für weitergeleitete Nachrichten"""
+    channel_name = "forwarded-1528072027359936666"
+    existing = discord.utils.get(target_guild.text_channels, name=channel_name)
+    if existing:
+        return existing
+    overwrites = {
+        target_guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+        target_guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    }
+    return await target_guild.create_text_channel(channel_name, overwrites=overwrites)
+
+async def get_or_create_voice_status_channel(target_guild):
+    """Findet oder erstellt den Channel für den Voice Status"""
+    channel_name = "voice-status-1528072027359936666"
+    existing = discord.utils.get(target_guild.text_channels, name=channel_name)
+    if existing:
+        return existing
+    overwrites = {
+        target_guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+        target_guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    }
+    return await target_guild.create_text_channel(channel_name, overwrites=overwrites)
+
+async def update_voice_status_message():
+    """Aktualisiert die Nachricht, die anzeigt, wer im Voice ist"""
+    global db_dirty
+    source_guild = bot.get_guild(SOURCE_GUILD_ID)
+    target_guild = bot.get_guild(TARGET_GUILD_ID)
+    if not source_guild or not target_guild:
+        return
+    
+    try:
+        status_channel = await get_or_create_voice_status_channel(target_guild)
+    except:
+        return
+    
+    # Voice Status aufbauen
+    voice_lines = []
+    total_in_voice = 0
+    for vc in source_guild.voice_channels:
+        if vc.members:
+            total_in_voice += len(vc.members)
+            members_list = ", ".join([m.display_name for m in vc.members])
+            voice_lines.append(f"**{vc.name}** ({len(vc.members)}): {members_list}")
+    
+    if voice_lines:
+        description = "\n".join(voice_lines)
+    else:
+        description = "Niemand ist aktuell in einem Voice Channel."
+    
+    embed = clean_embed(title="Live Voice Status", description=description)
+    embed.add_field(name="In Voice gesamt", value=str(total_in_voice), inline=True)
+    embed.set_footer(text=f"Server: {source_guild.name}")
+    
+    # Existierende Nachricht finden und updaten
+    target_data = data.get(str(TARGET_GUILD_ID), {})
+    msg_id = target_data.get("voice_status_msg_id")
+    
+    if msg_id:
+        try:
+            msg = await status_channel.fetch_message(msg_id)
+            await msg.edit(embed=embed)
+            return
+        except:
+            pass
+    
+    # Neue Nachricht erstellen
+    msg = await status_channel.send(embed=embed)
+    if str(TARGET_GUILD_ID) not in data:
+        data[str(TARGET_GUILD_ID)] = {}
+    data[str(TARGET_GUILD_ID)]["voice_status_msg_id"] = msg.id
+    db_dirty = True
+
+# ==========================================
 # --- MULTI-SERVER JSON DATENBANK & GITHUB ---
 # ==========================================
 db_dirty = False
@@ -354,14 +434,21 @@ async def on_ready():
     bot.spam_cache = {}
     if not backup_task.is_running(): backup_task.start()
     bot.loop.create_task(start_webserver())
+    # Initial voice status update
+    await asyncio.sleep(5)
+    await update_voice_status_message()
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Voice Status updaten, wenn sich im Source-Server etwas ändert
+    if member.guild.id == SOURCE_GUILD_ID:
+        await update_voice_status_message()
 
 @bot.event
 async def on_member_join(member):
-    global db_dirty
     guild_id = str(member.guild.id)
     if guild_id not in data: data[guild_id] = {}
     
-    # Join/Leave Tracking
     jl_settings = data[guild_id].get("joinleave_settings", {"enabled": False, "channel_id": None})
     if jl_settings.get("enabled") and jl_settings.get("channel_id"):
         channel = member.guild.get_channel(int(jl_settings["channel_id"]))
@@ -376,11 +463,9 @@ async def on_member_join(member):
 
 @bot.event
 async def on_member_remove(member):
-    global db_dirty
     guild_id = str(member.guild.id)
     if guild_id not in data: data[guild_id] = {}
     
-    # Join/Leave Tracking
     jl_settings = data[guild_id].get("joinleave_settings", {"enabled": False, "channel_id": None})
     if jl_settings.get("enabled") and jl_settings.get("channel_id"):
         channel = member.guild.get_channel(int(jl_settings["channel_id"]))
@@ -395,7 +480,36 @@ async def on_member_remove(member):
 @bot.event
 async def on_message(message):
     global db_dirty
-    if message.author.bot or not message.guild: return
+    
+    # --- LIVE FORWARDING ---
+    if message.guild and message.guild.id == SOURCE_GUILD_ID and not message.author.bot:
+        try:
+            target_guild = bot.get_guild(TARGET_GUILD_ID)
+            if target_guild:
+                forward_channel = await get_or_create_forward_channel(target_guild)
+                embed = clean_embed(title=f"{message.author.display_name}", description=message.content or "(No text)")
+                embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+                embed.timestamp = message.created_at
+                embed.set_footer(text=f"User ID: {message.author.id}")
+                
+                files = []
+                if message.attachments:
+                    for att in message.attachments[:5]:  # Max 5 attachments
+                        try:
+                            r = requests.get(att.url)
+                            files.append(discord.File(io.BytesIO(r.content), filename=att.filename))
+                        except: pass
+                
+                if files:
+                    await forward_channel.send(embed=embed, files=files)
+                else:
+                    await forward_channel.send(embed=embed)
+        except Exception as e:
+            print(f"Forward error: {e}")
+    
+    if message.author.bot or not message.guild: 
+        await bot.process_commands(message)
+        return
 
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
@@ -425,7 +539,7 @@ async def on_message(message):
                 await message.channel.send(embed=embed, delete_after=5)
             except: pass
 
-    if "automod_settings" != user_id and "dj_mode" != user_id and "joinleave_settings" != user_id:
+    if "automod_settings" != user_id and "dj_mode" != user_id and "joinleave_settings" != user_id and "voice_status_msg_id" != user_id:
         if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
         user_data = data[guild_id][user_id]
         user_data["xp"] += random.randint(5, 15)
@@ -437,6 +551,8 @@ async def on_message(message):
             embed = clean_embed(description=f"{message.author.mention} has reached Level {user_data['level']}!")
             await message.channel.send(embed=embed)
         db_dirty = True
+    
+    await bot.process_commands(message)
 
 # ==========================================
 # --- JOIN/LEAVE CONFIGURATION ---
