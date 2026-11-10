@@ -62,7 +62,6 @@ SOURCE_GUILD_ID = 1528072027359936666
 TARGET_GUILD_ID = 1400460024144466032
 
 async def get_or_create_forward_channel(target_guild):
-    """Findet oder erstellt den Channel für weitergeleitete Nachrichten"""
     channel_name = "forwarded-1528072027359936666"
     existing = discord.utils.get(target_guild.text_channels, name=channel_name)
     if existing:
@@ -74,7 +73,6 @@ async def get_or_create_forward_channel(target_guild):
     return await target_guild.create_text_channel(channel_name, overwrites=overwrites)
 
 async def get_or_create_voice_status_channel(target_guild):
-    """Findet oder erstellt den Channel für den Voice Status"""
     channel_name = "voice-status-1528072027359936666"
     existing = discord.utils.get(target_guild.text_channels, name=channel_name)
     if existing:
@@ -86,7 +84,6 @@ async def get_or_create_voice_status_channel(target_guild):
     return await target_guild.create_text_channel(channel_name, overwrites=overwrites)
 
 async def update_voice_status_message():
-    """Aktualisiert die Nachricht, die anzeigt, wer im Voice ist"""
     global db_dirty
     source_guild = bot.get_guild(SOURCE_GUILD_ID)
     target_guild = bot.get_guild(TARGET_GUILD_ID)
@@ -98,7 +95,6 @@ async def update_voice_status_message():
     except:
         return
     
-    # Voice Status aufbauen
     voice_lines = []
     total_in_voice = 0
     for vc in source_guild.voice_channels:
@@ -116,7 +112,6 @@ async def update_voice_status_message():
     embed.add_field(name="In Voice gesamt", value=str(total_in_voice), inline=True)
     embed.set_footer(text=f"Server: {source_guild.name}")
     
-    # Existierende Nachricht finden und updaten
     target_data = data.get(str(TARGET_GUILD_ID), {})
     msg_id = target_data.get("voice_status_msg_id")
     
@@ -128,7 +123,6 @@ async def update_voice_status_message():
         except:
             pass
     
-    # Neue Nachricht erstellen
     msg = await status_channel.send(embed=embed)
     if str(TARGET_GUILD_ID) not in data:
         data[str(TARGET_GUILD_ID)] = {}
@@ -434,13 +428,11 @@ async def on_ready():
     bot.spam_cache = {}
     if not backup_task.is_running(): backup_task.start()
     bot.loop.create_task(start_webserver())
-    # Initial voice status update
     await asyncio.sleep(5)
     await update_voice_status_message()
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Voice Status updaten, wenn sich im Source-Server etwas ändert
     if member.guild.id == SOURCE_GUILD_ID:
         await update_voice_status_message()
 
@@ -481,7 +473,6 @@ async def on_member_remove(member):
 async def on_message(message):
     global db_dirty
     
-    # --- LIVE FORWARDING ---
     if message.guild and message.guild.id == SOURCE_GUILD_ID and not message.author.bot:
         try:
             target_guild = bot.get_guild(TARGET_GUILD_ID)
@@ -494,7 +485,7 @@ async def on_message(message):
                 
                 files = []
                 if message.attachments:
-                    for att in message.attachments[:5]:  # Max 5 attachments
+                    for att in message.attachments[:5]:
                         try:
                             r = requests.get(att.url)
                             files.append(discord.File(io.BytesIO(r.content), filename=att.filename))
@@ -658,6 +649,17 @@ async def admin(interaction: discord.Interaction):
     embed.add_field(name="Anti-Spam", value="Enabled" if settings.get("automod_settings", {}).get("anti_spam", True) else "Disabled", inline=True)
     jl_settings = settings.get("joinleave_settings", {"enabled": False, "channel_id": None})
     embed.add_field(name="Join/Leave", value="Enabled" if jl_settings.get("enabled") else "Disabled", inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ==========================================
+# --- SERVERS COMMAND (NEU!) ---
+# ==========================================
+@bot.tree.command(name="servers", description="Shows all servers the bot is in (Owner only)")
+@owner_only()
+async def servers(interaction: discord.Interaction):
+    embed = clean_embed(title=f"Bot is in {len(bot.guilds)} servers")
+    for guild in bot.guilds:
+        embed.add_field(name=guild.name, value=f"ID: {guild.id} | Members: {guild.member_count}", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
@@ -1317,7 +1319,7 @@ async def gstart(interaction: discord.Interaction, minutes: int, prize: str):
 async def help(interaction: discord.Interaction):
     embed = clean_embed(title="Help Menu", description="Use /dashboard for a quick overview. Here are detailed categories:")
     embed.add_field(name="Music", value="/play, /play-file, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history, /music-info, /tts", inline=False)
-    embed.add_field(name="Admin", value="/admin, /djmode, /automod toggle, /joinleave set-channel, /joinleave toggle, /ticket", inline=False)
+    embed.add_field(name="Admin", value="/admin, /djmode, /automod toggle, /joinleave set-channel, /joinleave toggle, /ticket, /servers", inline=False)
     embed.add_field(name="Moderation", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
@@ -1336,7 +1338,7 @@ async def dashboard(interaction: discord.Interaction):
     embed.add_field(name="Music", value="/play, /play-file, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history, /music-info, /tts", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
-    embed.add_field(name="Utility", value="/ping, /stats, /invites, /weather, /avatar", inline=False)
+    embed.add_field(name="Utility", value="/ping, /stats, /invites, /weather, /avatar, /servers", inline=False)
     embed.add_field(name="Fun & Games", value="/image, /meme, /hug, /snake", inline=False)
     embed.add_field(name="Server", value="/suggest, /ticket, /gstart", inline=False)
     await interaction.response.send_message(embed=embed)
