@@ -521,12 +521,12 @@ async def servers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
-# --- LOCK / UNLOCK ALL CHANNELS (ALL ROLES + MEMBERS) ---
+# --- LOCK / UNLOCK ALL CHANNELS (ALL ROLES + MEMBERS, FULL RESTORE) ---
 # ==========================================
 lock_group = app_commands.Group(name="lock", description="Lock channels")
 unlock_group = app_commands.Group(name="unlock", description="Unlock channels")
 
-@lock_group.command(name="all", description="Locks all channels for all non-admin roles and members")
+@lock_group.command(name="all", description="Locks ALL channels for all non-admin roles and members")
 @owner_only()
 async def lock_all(interaction: discord.Interaction):
     global db_dirty
@@ -543,8 +543,6 @@ async def lock_all(interaction: discord.Interaction):
     all_channels.extend(guild.voice_channels)
     
     for channel in all_channels:
-        if isinstance(channel, discord.TextChannel) and channel.id == interaction.channel.id:
-            continue
         try:
             channel_backup = {}
             for target, overwrite in channel.overwrites.items():
@@ -596,7 +594,7 @@ async def lock_all(interaction: discord.Interaction):
         embed.add_field(name="Errors", value="\n".join(errors[:5]), inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@unlock_group.command(name="all", description="Unlocks all channels (restores everything)")
+@unlock_group.command(name="all", description="Unlocks all channels (restores everything exactly)")
 @owner_only()
 async def unlock_all(interaction: discord.Interaction):
     global db_dirty
@@ -624,6 +622,15 @@ async def unlock_all(interaction: discord.Interaction):
             
             new_overwrites = dict(channel.overwrites)
             
+            # WICHTIG: @everyone entfernen, falls es beim Locken hinzugefügt wurde
+            # aber nicht im Backup steht
+            everyone = guild.default_role
+            everyone_key = f"role_{everyone.id}"
+            if everyone_key not in channel_backup:
+                if everyone in new_overwrites:
+                    del new_overwrites[everyone]
+            
+            # Alle anderen Overwrites wiederherstellen
             for target_key, perms in channel_backup.items():
                 target_parts = target_key.split("_", 1)
                 target_type = target_parts[0]
@@ -1253,9 +1260,6 @@ async def dashboard(interaction: discord.Interaction):
     embed.add_field(name="Server", value="/suggest, /ticket, /gstart", inline=False)
     await interaction.response.send_message(embed=embed)
 
-# ==========================================
-# --- ERROR HANDLER ---
-# ==========================================
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
@@ -1272,9 +1276,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.response.send_message(embed=clean_embed(title="Error", description=f"```\n{error_msg}\n```"), ephemeral=True)
     except: pass
 
-# ==========================================
-# --- BOT START ---
-# ==========================================
 bot.tree.add_command(role_group)
 bot.tree.add_command(automod_group)
 bot.tree.add_command(joinleave_group)
