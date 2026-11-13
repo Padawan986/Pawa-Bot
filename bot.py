@@ -521,95 +521,77 @@ async def servers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
-# --- LOCK / UNLOCK ALL CHANNELS (ALL ROLES) ---
+# --- LOCK / UNLOCK ALL CHANNELS (ALL ROLES + MEMBERS) ---
 # ==========================================
 lock_group = app_commands.Group(name="lock", description="Lock channels")
 unlock_group = app_commands.Group(name="unlock", description="Unlock channels")
 
-@lock_group.command(name="all", description="Locks all channels for all non-admin roles")
+@lock_group.command(name="all", description="Locks all channels for all non-admin roles and members")
 @owner_only()
 async def lock_all(interaction: discord.Interaction):
     global db_dirty
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
     
-    # Alle nicht-Admin Rollen sammeln (inklusive @everyone)
-    non_admin_roles = []
-    for role in guild.roles:
-        if role.permissions.administrator:
-            continue
-        if role.managed:
-            continue
-        if role >= guild.me.top_role and role.id != guild.id:
-            continue
-        non_admin_roles.append(role)
-    
     backup = {}
     locked_count = 0
     errors = []
     
-    # Kategorien zuerst sperren
-    for category in guild.categories:
-        try:
-            channel_backup = {}
-            for role in non_admin_roles:
-                ow = category.overwrites_for(role)
-                allow, deny = ow.pair()
-                channel_backup[str(role.id)] = {"allow": allow.value, "deny": deny.value}
-            backup[f"category_{category.id}"] = channel_backup
-            
-            new_overwrites = dict(category.overwrites)
-            for role in non_admin_roles:
-                new_overwrites[role] = discord.PermissionOverwrite(view_channel=False)
-            await category.edit(overwrites=new_overwrites)
-            locked_count += 1
-        except Exception as e:
-            errors.append(f"category/{category.name}: {e}")
+    all_channels = []
+    all_channels.extend(guild.categories)
+    all_channels.extend(guild.text_channels)
+    all_channels.extend(guild.voice_channels)
     
-    # Text Channels sperren
-    for channel in guild.text_channels:
-        if channel.id == interaction.channel.id:
+    for channel in all_channels:
+        if isinstance(channel, discord.TextChannel) and channel.id == interaction.channel.id:
             continue
         try:
             channel_backup = {}
-            for role in non_admin_roles:
-                ow = channel.overwrites_for(role)
-                allow, deny = ow.pair()
-                channel_backup[str(role.id)] = {"allow": allow.value, "deny": deny.value}
-            backup[f"text_{channel.id}"] = channel_backup
+            for target, overwrite in channel.overwrites.items():
+                allow, deny = overwrite.pair()
+                target_type = "role" if isinstance(target, discord.Role) else "member"
+                channel_backup[f"{target_type}_{target.id}"] = {"allow": allow.value, "deny": deny.value}
+            backup[f"{channel.type}_{channel.id}"] = channel_backup
             
             new_overwrites = dict(channel.overwrites)
-            for role in non_admin_roles:
-                new_overwrites[role] = discord.PermissionOverwrite(view_channel=False, send_messages=False)
+            
+            for target in list(new_overwrites.keys()):
+                is_admin = False
+                if isinstance(target, discord.Role):
+                    if target.permissions.administrator or target.managed:
+                        is_admin = True
+                else:
+                    if target.guild_permissions.administrator or target.id in OWNER_IDS or target.id == guild.owner_id:
+                        is_admin = True
+                
+                if not is_admin:
+                    if isinstance(channel, discord.TextChannel):
+                        new_overwrites[target] = discord.PermissionOverwrite(view_channel=False, send_messages=False)
+                    elif isinstance(channel, discord.VoiceChannel):
+                        new_overwrites[target] = discord.PermissionOverwrite(view_channel=False, connect=False)
+                    else:
+                        new_overwrites[target] = discord.PermissionOverwrite(view_channel=False)
+            
+            everyone = guild.default_role
+            if everyone not in new_overwrites:
+                if isinstance(channel, discord.TextChannel):
+                    new_overwrites[everyone] = discord.PermissionOverwrite(view_channel=False, send_messages=False)
+                elif isinstance(channel, discord.VoiceChannel):
+                    new_overwrites[everyone] = discord.PermissionOverwrite(view_channel=False, connect=False)
+                else:
+                    new_overwrites[everyone] = discord.PermissionOverwrite(view_channel=False)
+            
             await channel.edit(overwrites=new_overwrites)
             locked_count += 1
         except Exception as e:
-            errors.append(f"text/{channel.name}: {e}")
-    
-    # Voice Channels sperren
-    for channel in guild.voice_channels:
-        try:
-            channel_backup = {}
-            for role in non_admin_roles:
-                ow = channel.overwrites_for(role)
-                allow, deny = ow.pair()
-                channel_backup[str(role.id)] = {"allow": allow.value, "deny": deny.value}
-            backup[f"voice_{channel.id}"] = channel_backup
-            
-            new_overwrites = dict(channel.overwrites)
-            for role in non_admin_roles:
-                new_overwrites[role] = discord.PermissionOverwrite(view_channel=False, connect=False)
-            await channel.edit(overwrites=new_overwrites)
-            locked_count += 1
-        except Exception as e:
-            errors.append(f"voice/{channel.name}: {e}")
+            errors.append(f"{channel.name}: {e}")
     
     guild_id = str(guild.id)
     if guild_id not in data: data[guild_id] = {}
     data[guild_id]["lock_backup"] = backup
     db_dirty = True
     
-    embed = clean_embed(title="Lock All", description=f"Locked {locked_count} channels for {len(non_admin_roles)} roles.")
+    embed = clean_embed(title="Lock All", description=f"Locked {locked_count} channels.")
     if errors:
         embed.add_field(name="Errors", value="\n".join(errors[:5]), inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -630,8 +612,7 @@ async def unlock_all(interaction: discord.Interaction):
     restored = 0
     errors = []
     
-    # Channels zuerst, Kategorien zuletzt (damit Sync korrekt ist)
-    sorted_items = sorted(backup.items(), key=lambda x: not x[0].startswith("category_"))
+    sorted_items = sorted(backup.items(), key=lambda x: not x[0].startswith("Category"))
     
     for channel_key, channel_backup in sorted_items:
         try:
@@ -643,10 +624,17 @@ async def unlock_all(interaction: discord.Interaction):
             
             new_overwrites = dict(channel.overwrites)
             
-            for role_id_str, perms in channel_backup.items():
-                role_id = int(role_id_str)
-                role = guild.get_role(role_id)
-                if not role:
+            for target_key, perms in channel_backup.items():
+                target_parts = target_key.split("_", 1)
+                target_type = target_parts[0]
+                target_id = int(target_parts[1])
+                
+                if target_type == "role":
+                    target = guild.get_role(target_id)
+                else:
+                    target = guild.get_member(target_id) or await bot.fetch_user(target_id)
+                
+                if not target:
                     continue
                 
                 allow = discord.Permissions(perms["allow"])
@@ -654,10 +642,10 @@ async def unlock_all(interaction: discord.Interaction):
                 overwrite = discord.PermissionOverwrite.from_pair(allow, deny)
                 
                 if overwrite.is_empty():
-                    if role in new_overwrites:
-                        del new_overwrites[role]
+                    if target in new_overwrites:
+                        del new_overwrites[target]
                 else:
-                    new_overwrites[role] = overwrite
+                    new_overwrites[target] = overwrite
             
             await channel.edit(overwrites=new_overwrites)
             restored += 1
