@@ -521,7 +521,7 @@ async def servers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
-# --- LOCK / UNLOCK ALL CHANNELS ---
+# --- LOCK / UNLOCK ALL CHANNELS (FIXED) ---
 # ==========================================
 lock_group = app_commands.Group(name="lock", description="Lock channels")
 unlock_group = app_commands.Group(name="unlock", description="Unlock channels")
@@ -541,7 +541,8 @@ async def lock_all(interaction: discord.Interaction):
             continue
         try:
             overwrites = channel.overwrites_for(everyone_role)
-            backup[f"text_{channel.id}"] = {"allow": overwrites.allow.value, "deny": overwrites.deny.value}
+            allow, deny = overwrites.pair()
+            backup[f"text_{channel.id}"] = {"allow": allow.value, "deny": deny.value}
             new_overwrites = dict(channel.overwrites)
             new_overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False, send_messages=False)
             await channel.edit(overwrites=new_overwrites)
@@ -551,7 +552,8 @@ async def lock_all(interaction: discord.Interaction):
     for channel in guild.voice_channels:
         try:
             overwrites = channel.overwrites_for(everyone_role)
-            backup[f"voice_{channel.id}"] = {"allow": overwrites.allow.value, "deny": overwrites.deny.value}
+            allow, deny = overwrites.pair()
+            backup[f"voice_{channel.id}"] = {"allow": allow.value, "deny": deny.value}
             new_overwrites = dict(channel.overwrites)
             new_overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False, connect=False)
             await channel.edit(overwrites=new_overwrites)
@@ -561,7 +563,8 @@ async def lock_all(interaction: discord.Interaction):
     for category in guild.categories:
         try:
             overwrites = category.overwrites_for(everyone_role)
-            backup[f"category_{category.id}"] = {"allow": overwrites.allow.value, "deny": overwrites.deny.value}
+            allow, deny = overwrites.pair()
+            backup[f"category_{category.id}"] = {"allow": allow.value, "deny": deny.value}
             new_overwrites = dict(category.overwrites)
             new_overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False)
             await category.edit(overwrites=new_overwrites)
