@@ -530,7 +530,7 @@ async def on_message(message):
                 await message.channel.send(embed=embed, delete_after=5)
             except: pass
 
-    if "automod_settings" != user_id and "dj_mode" != user_id and "joinleave_settings" != user_id and "voice_status_msg_id" != user_id:
+    if "automod_settings" != user_id and "dj_mode" != user_id and "joinleave_settings" != user_id and "voice_status_msg_id" != user_id and "lock_backup" != user_id:
         if user_id not in data[guild_id]: data[guild_id][user_id] = {"balance": 0, "xp": 0, "level": 0, "warns": 0}
         user_data = data[guild_id][user_id]
         user_data["xp"] += random.randint(5, 15)
@@ -652,7 +652,7 @@ async def admin(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==========================================
-# --- SERVERS COMMAND (NEU!) ---
+# --- SERVERS COMMAND ---
 # ==========================================
 @bot.tree.command(name="servers", description="Shows all servers the bot is in (Owner only)")
 @owner_only()
@@ -661,6 +661,121 @@ async def servers(interaction: discord.Interaction):
     for guild in bot.guilds:
         embed.add_field(name=guild.name, value=f"ID: {guild.id} | Members: {guild.member_count}", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ==========================================
+# --- LOCK / UNLOCK ALL CHANNELS ---
+# ==========================================
+lock_group = app_commands.Group(name="lock", description="Lock channels")
+unlock_group = app_commands.Group(name="unlock", description="Unlock channels")
+
+@lock_group.command(name="all", description="Locks all channels for members (hides them)")
+@owner_only()
+async def lock_all(interaction: discord.Interaction):
+    global db_dirty
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    everyone_role = guild.default_role
+    
+    backup = {}
+    locked_count = 0
+    
+    # Text Channels
+    for channel in guild.text_channels:
+        if channel.id == interaction.channel.id:
+            continue  # Skip current channel so owner can still use /unlock all
+        overwrites = channel.overwrites_for(everyone_role)
+        allow_val = overwrites.allow.value if overwrites.allow else 0
+        deny_val = overwrites.deny.value if overwrites.deny else 0
+        backup[f"text_{channel.id}"] = {"allow": allow_val, "deny": deny_val}
+        
+        new_overwrites = channel.overwrites
+        new_overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False, send_messages=False)
+        try:
+            await channel.edit(overwrites=new_overwrites)
+            locked_count += 1
+        except: pass
+    
+    # Voice Channels
+    for channel in guild.voice_channels:
+        overwrites = channel.overwrites_for(everyone_role)
+        allow_val = overwrites.allow.value if overwrites.allow else 0
+        deny_val = overwrites.deny.value if overwrites.deny else 0
+        backup[f"voice_{channel.id}"] = {"allow": allow_val, "deny": deny_val}
+        
+        new_overwrites = channel.overwrites
+        new_overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False, connect=False)
+        try:
+            await channel.edit(overwrites=new_overwrites)
+            locked_count += 1
+        except: pass
+    
+    # Categories
+    for category in guild.categories:
+        overwrites = category.overwrites_for(everyone_role)
+        allow_val = overwrites.allow.value if overwrites.allow else 0
+        deny_val = overwrites.deny.value if overwrites.deny else 0
+        backup[f"category_{category.id}"] = {"allow": allow_val, "deny": deny_val}
+        
+        new_overwrites = category.overwrites
+        new_overwrites[everyone_role] = discord.PermissionOverwrite(view_channel=False)
+        try:
+            await category.edit(overwrites=new_overwrites)
+            locked_count += 1
+        except: pass
+    
+    guild_id = str(guild.id)
+    if guild_id not in data: data[guild_id] = {}
+    data[guild_id]["lock_backup"] = backup
+    db_dirty = True
+    
+    embed = clean_embed(title="Lock All", description=f"Locked {locked_count} channels.\nUse /unlock all in this channel to restore everything.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@unlock_group.command(name="all", description="Unlocks all channels (restores previous permissions)")
+@owner_only()
+async def unlock_all(interaction: discord.Interaction):
+    global db_dirty
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    guild_id = str(guild.id)
+    
+    backup = data.get(guild_id, {}).get("lock_backup", {})
+    if not backup:
+        embed = clean_embed(description="No lock backup found. Nothing to restore.")
+        return await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    restored = 0
+    for channel_key, perms in backup.items():
+        parts = channel_key.split("_", 1)
+        channel_type = parts[0]
+        actual_id = int(parts[1])
+        
+        if channel_type == "category":
+            channel = guild.get_channel(actual_id)
+        else:
+            channel = guild.get_channel(actual_id)
+        
+        if channel:
+            allow = discord.Permissions(perms["allow"])
+            deny = discord.Permissions(perms["deny"])
+            overwrite = discord.PermissionOverwrite.from_pair(allow, deny)
+            
+            new_overwrites = channel.overwrites
+            if overwrite.is_empty():
+                if guild.default_role in new_overwrites:
+                    del new_overwrites[guild.default_role]
+            else:
+                new_overwrites[guild.default_role] = overwrite
+            try:
+                await channel.edit(overwrites=new_overwrites)
+                restored += 1
+            except: pass
+    
+    data[guild_id].pop("lock_backup", None)
+    db_dirty = True
+    
+    embed = clean_embed(title="Unlock All", description=f"Restored permissions for {restored} channels.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ==========================================
 # --- ADMIN MODERATION ---
@@ -1320,6 +1435,7 @@ async def help(interaction: discord.Interaction):
     embed = clean_embed(title="Help Menu", description="Use /dashboard for a quick overview. Here are detailed categories:")
     embed.add_field(name="Music", value="/play, /play-file, /skip, /stop, /volume, /shuffle, /grab, /nowplaying, /history, /music-info, /tts", inline=False)
     embed.add_field(name="Admin", value="/admin, /djmode, /automod toggle, /joinleave set-channel, /joinleave toggle, /ticket, /servers", inline=False)
+    embed.add_field(name="Lock/Unlock", value="/lock all, /unlock all", inline=False)
     embed.add_field(name="Moderation", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Economy", value="/balance, /daily, /gamble", inline=False)
     embed.add_field(name="Leveling", value="/rank, /leaderboard", inline=False)
@@ -1332,6 +1448,7 @@ async def dashboard(interaction: discord.Interaction):
     embed = clean_embed(title="Server Dashboard", description="Overview of all slash commands")
     embed.add_field(name="AutoMod (Admins)", value="/automod status, /automod toggle", inline=False)
     embed.add_field(name="Join/Leave (Admins)", value="/joinleave set-channel, /joinleave toggle, /joinleave status", inline=False)
+    embed.add_field(name="Lock/Unlock (Admins)", value="/lock all, /unlock all", inline=False)
     embed.add_field(name="Moderation (Admins)", value="/ban, /unban, /kick, /timeout, /purge, /warn, /setnick", inline=False)
     embed.add_field(name="Roles (Admins)", value="/role add, /role remove, /create-role", inline=False)
     embed.add_field(name="Reporting", value="/adminabuse", inline=False)
@@ -1369,6 +1486,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 bot.tree.add_command(role_group)
 bot.tree.add_command(automod_group)
 bot.tree.add_command(joinleave_group)
+bot.tree.add_command(lock_group)
+bot.tree.add_command(unlock_group)
 
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
